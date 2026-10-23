@@ -91,7 +91,8 @@ Gate を通して解錠します。流れは「命令を送る → 1 秒ごと�
   {"type":"unlock.succeeded",...,"verified":true,"durationMs":...}
   { status: "unlocked", verified: true }
   ```
-- `verified: false` が返る場合: 鍵は開いたが、8 秒以内に API の状態が `unlocked` にならなかったということです。`durationMs` と、実際に回り終わるまでの体感の秒数を記録してください（確認の待ち時間の調整に使います）
+- `verified: false` が返る場合: 命令は受け付けられたが、8 秒の間に状態を 1 度も読めなかったということです（ターミナルに `reading lock state failed` の行が出ていれば、その理由も）。`durationMs` と、実際に回り終わるまでの体感の秒数を記録してください（確認の待ち時間の調整に使います）
+- `{ status: "failed", reason: "not_confirmed" }` が返る場合: 命令は受け付けられたのに、8 秒たっても状態が `locked` のままだったということです。鍵が実際に動いたかどうかを記録してください。動いていたなら、API の状態の更新が遅い（待ち時間を延ばす必要がある）という重要な観察です
 
 終わったら施錠しておきます。
 
@@ -128,6 +129,7 @@ bun run probe sesame history
 | `.env` の秘密鍵の 1 文字を変える | `bun run probe sesame lock` | 署名が違うときのステータスと本文。終わったら元に戻す |
 | `.env` の API キーの 1 文字を変える | `bun run probe sesame state` | 認証エラーのステータス（403 か 401 か）。終わったら元に戻す |
 | サムターンを手で中途半端な位置にする | `bun run probe sesame state` | `unknown`（`moved`）になるか |
+| Hub3 / Wi-Fi モジュールの電源を抜き、サムターンを**手で**回してから `state` | `bun run probe sesame state` | API の状態が、手で回した後の値に変わるか、抜く前の古い値のままか。`curl -s -H "x-api-key: $SESAME_API_KEY" https://app.candyhouse.co/api/sesame2/$SESAME_UUID` の `timestamp` も記録する。KAGI は `timestamp` が解錠の命令より古い値を「確認」に使わない（秒かミリ秒かを自動で判定する）。**記録してほしいのは 2 点**: (1) `timestamp` の単位（10 桁なら秒、13 桁ならミリ秒）、(2) 解錠の直後に `timestamp` が新しい時刻に変わるか（変わらないなら、KAGI は毎回「確認できない」になるので調整が要る） |
 
 > 何度も続けて実行すると、HTTP 429 が返ることがあります（回数の上限は公開されていません）。1 回ごとに数秒空けてください。
 
@@ -162,10 +164,10 @@ bun run probe sesame history
 | ページを開いただけ | **鍵は動かない**（GET では開けない） |
 | 「開ける」を押す | 鍵が開き、「開きました」と出る。ターミナルに `unlock.succeeded` の JSON が 1 行出る |
 | 5 秒以内にもう一度押す | 「押したばかりです」と出て、鍵は動かない |
-| `door:home` から自分を外し、`/auth/logout` を開いてから、もう一度ログインして押す | 「このドアを開ける権限がありません」と出て、鍵は動かない |
+| `door:home` から自分を外し、ブラウザのクッキーを消して（または KAGI のログイン期限が切れてから）もう一度ログインして押す | 「このドアを開ける権限がありません」と出て、鍵は動かない |
 | `/d/xxx`（存在しないドア）を開く | 「そのドアは見つかりません」と出る |
 
-> グループから外しても、**KAGI のログイン（既定で 12 時間）が切れるまでは前の権限のまま**です。DB を持たない代わりの仕様です。すぐに効かせたいときは、`/auth/logout` を開くか、`KAGI_SESSION_SECRET` を変えて全員をログアウトさせます。
+> グループから外しても、**KAGI のログイン（既定で 12 時間）が切れるまでは前の権限のまま**です。DB を持たない代わりの仕様です。ログアウト（`POST /auth/logout`）で消えるのは**そのブラウザのログインだけ**で、管理者が他の人の権限を今すぐ取り消す手段にはなりません。すぐに全員に効かせたいときは、`KAGI_SESSION_SECRET` を変えて全員をログアウトさせます。
 
 Clerk で試す場合は、`KAGI_AUTH=clerk` にして、`CLERK_PUBLISHABLE_KEY` と `CLERK_SECRET_KEY` を入れます。権限は、Clerk のユーザーの Public metadata に `{"doors": ["home"]}` を入れて付けます。
 

@@ -132,14 +132,19 @@ test("someone outside door:home is signed in but denied", async () => {
   expect(audit.at(-1)).toMatchObject({ type: "unlock.denied", doorId: "home" });
 }, 60_000);
 
-test("after /auth/logout the door page asks Pocket ID again", async () => {
+test("the Sign out button signs out; afterwards the door page asks Pocket ID again", async () => {
   const page = await signedInPage(users.alice);
   await page.goto(`${KAGI}/d/home`);
   await page.waitForURL(`${KAGI}/d/home`, { timeout: 15_000 });
 
+  // Logout is POST-only (CSRF check); a GET must not sign anyone out.
+  expect(await page.evaluate(async () => (await fetch("/auth/logout")).status)).toBe(404);
+
   const requests: string[] = [];
   page.on("request", (r) => requests.push(r.url()));
-  await page.goto(`${KAGI}/auth/logout`);
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await page.waitForURL(`${KAGI}/auth/logout`, { timeout: 15_000 });
+  expect(await page.textContent("body")).toContain("Signed out");
   await page.goto(`${KAGI}/d/home`);
   await page.waitForURL(`${KAGI}/d/home`, { timeout: 15_000 });
   // Still signed in at Pocket ID, so it comes straight back, but via the provider.

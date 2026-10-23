@@ -72,7 +72,7 @@ Cloud Run settings that follow from the design:
 ```ts
 /** Static configuration. Loaded at startup; no database. */
 interface DoorConfig {
-  id: string;                 // URL segment: /d/<id>
+  id: string;                 // URL segment: /d/<id>; 1-64 of [A-Za-z0-9._-], not "." or ".." (isValidDoorId)
   name: string;               // shown on the button page
   driver: string;             // key into the drivers map passed to createGate()
   device: unknown;            // driver-specific device reference, validated by the driver
@@ -104,11 +104,19 @@ type CommandFailureReason =
   | "rate_limited"
   | "timeout"
   | "invalid_device"          // config points at a non-lock or unknown device
-  | "vendor_error";
+  | "vendor_error"
+  | "not_confirmed";          // set by the core: the lock still read "locked" after the command
 
 type CommandResult =
   | { ok: true }
-  | { ok: false; reason: CommandFailureReason; retryable: boolean; detail?: string };
+  | {
+      ok: false; reason: CommandFailureReason; retryable: boolean; detail?: string;
+      /** No clear answer (network error, timeout, HTTP 5xx): the command may have run. */
+      ambiguous?: boolean;
+    };
+
+/** A reading plus, when the vendor reports it, when the vendor last observed that state. */
+interface LockReading { state: LockState; observedAt?: Date }
 
 interface LockDriver<Device = unknown> {
   readonly kind: string;                          // "switchbot" | "sesame" | …
@@ -117,11 +125,21 @@ interface LockDriver<Device = unknown> {
   parseDevice(device: unknown): Device;
   unlock(device: Device, ctx: CommandContext): Promise<CommandResult>;
   lock?(device: Device, ctx: CommandContext): Promise<CommandResult>;
-  getState?(device: Device, ctx: CommandContext): Promise<LockState>;
+  /** Throws when the state cannot be read. */
+  getState?(device: Device, ctx: CommandContext): Promise<LockState | LockReading>;
 }
 ```
 
-Drivers do **not** retry, poll or verify; the core does (one place to tune timeouts).
+Drivers do **not** retry, poll or verify; the core does (one place to tune timeouts). Drivers do
+say how sure they are: `ambiguous` only when the vendor gave no clear answer (fetch errors via
+`abortReason()`, 5xx); a clear refusal (4xx, an error code in the body, SwitchBot's 190) is not
+ambiguous, and its `retryable` is used as is.
+
+**Freshness of readings.** Vendor clouds answer state reads from a cache. SESAME returns the
+shadow's `timestamp` (seconds in the docs' example, "milliseconds" in their text; values below
+1e12 are taken as seconds), so its driver returns `observedAt`. The core ignores readings observed
+more than `verify.clockSkewMs` (2 s) before the command was sent. SwitchBot's status has no
+timestamp: a cached value there cannot be told from a fresh one, which is a known limit.
 
 ### Identity
 
@@ -131,6 +149,8 @@ interface Principal {
   displayName: string;
   /** Provider claims used by authorizers (e.g. OIDC "groups", Clerk publicMetadata). */
   claims: Record<string, unknown>;
+  /** Entry point, set by the HTTP adapter (never by the provider): "web" (door page) or "api". */
+  via?: "web" | "api";
 }
 
 /**
@@ -142,8 +162,10 @@ type AuthResult = { ok: true; principal: Principal } | { ok: false; response: Re
 /** Identity integration for the HTTP adapter (OIDC by default). Framework-agnostic. */
 interface Authenticator {
   authenticate(req: Request, opts: { returnTo: string }): Promise<AuthResult>;
-  /** Endpoints it owns under /auth/ (OIDC callback, logout); null for anything else. */
+  /** Endpoints it owns under /auth/ (OIDC callback, POST logout); null for anything else. */
   handle?(req: Request): Promise<Response | null>;
+  /** If set, the door page shows a "Sign out" button that POSTs here. */
+  readonly logoutPath?: string;
 }
 ```
 
@@ -154,26 +176,42 @@ both. The HTTP adapter follows it on GET, and on POST redirects back to the door
 
 #### OIDC (`@kagi/auth-oidc`, the default)
 
-- **Browser sign-in:** authorization code + PKCE, with `state` and `nonce`. The pending login
-  (state, nonce, verifier, return URL) rides in a short-lived encrypted cookie, so no server state.
-  Redirect URI: `<origin>/auth/callback`. `returnTo` must be same-origin (no open redirect).
-- **Session:** after the callback KAGI sets its own cookie: a JWE (`dir` + `A256GCM`) holding
-  `sub`, a display name and the person's claims (ID token + userinfo, minus protocol claims).
-  `__Host-` prefixed, `HttpOnly`, `SameSite=Lax`. Lifetime `KAGI_SESSION_TTL_SECONDS` (12 h).
+- **Browser sign-in:** authorization code + PKCE, with `state` and `nonce`. Each pending login
+  (state, nonce, verifier, return URL) rides in its own short-lived encrypted cookie named after
+  its state, so two tabs opened by a double tap do not overwrite each other; no server state.
+  At most 3 pending login cookies are kept (older abandoned ones are cleared when a new sign-in
+  starts), and every callback outcome (success, 400, 403, 500) clears its own.
+  Redirect URI: `<origin>/auth/callback`. `returnTo` must be same-origin (no open redirect); if it
+  is not, the callback only says "signed in" instead of redirecting anywhere.
+- **Session:** after the callback KAGI sets its own cookie: a JWE (`dir` + `A256GCM`, and only
+  those algorithms are accepted when opening it) holding `sub`, a display name and the claims
+  named in `keepClaims` (the server keeps only the top-level claim its authorizer reads), with
+  that list claim narrowed to entries with the allow prefix (`narrowClaim`, e.g. only `door:*`
+  groups out of hundreds). `__Host-` prefixed, `HttpOnly`, `SameSite=Lax`. Lifetime
+  `KAGI_SESSION_TTL_SECONDS` (12 h). A cookie over ~4 KB would be dropped silently and loop the
+  sign-in, so it fails with an error that tells the administrator to use a door-group prefix.
+- **Sign out:** the door page has a small "Sign out" button (`POST /auth/logout`).
 - **Trade-off — no per-session revocation.** Without a database a session lives until it
   expires. Removing someone at the provider takes effect at their next sign-in (≤ TTL);
-  rotating `KAGI_SESSION_SECRET` signs everyone out immediately. Clerk's adapter revokes
-  instantly but ties KAGI to Clerk; that is why it remains an option, not the default.
+  rotating `KAGI_SESSION_SECRET` signs everyone out immediately. `POST /auth/logout` clears only
+  the browser that sends it. Clerk's adapter revokes instantly but ties KAGI to Clerk; that is
+  why it remains an option, not the default.
 - **Authorization:** `claimAllowList("groups", { prefix: "door:" })` by default, i.e. a provider
   group named `door:home` opens door `home`, `door:*` opens all.
 
 #### API for other apps
 
 `POST /api/doors/:doorId/unlock` exists only when an API authenticator is configured.
-`jwtBearerAuthenticator` verifies `Authorization: Bearer <JWT>` against the issuer's JWKS
-(`iss`, optional `aud`, optional allowed `azp`). Typical use: HCM's server forwards the signed-in
-user's Clerk session token; KAGI needs no Clerk SDK for that. The same Gate runs, so the
-authorizer, cooldown and audit trail are shared with the door page. Lock credentials stay in KAGI.
+`jwtBearerAuthenticator` verifies `Authorization: Bearer <JWT>` against the issuer's JWKS:
+`iss`, `exp` and `sub` always, plus `aud` and/or allowed `azp`, **at least one of which is
+required** (otherwise any token the issuer ever signed for any app would open the door; the
+server refuses to start without one). Typical use: HCM's server forwards the signed-in user's
+Clerk session token; KAGI needs no Clerk SDK for that. The same Gate runs, so the cooldown and
+audit trail are shared with the door page. The route marks the principal `via: "api"`, so API
+callers can be authorized by a different claim (`KAGI_API_ALLOW_CLAIM` / `KAGI_API_ALLOW_PREFIX`,
+e.g. Clerk metadata) than the door page. Lock credentials stay in KAGI. A bad token is 401; an
+issuer that cannot be reached (discovery or JWKS fetch fails) is 503 with `Retry-After`, so the
+caller retries instead of treating its token as bad.
 
 ### Presence (optional)
 
@@ -205,8 +243,8 @@ interface Authorizer {
 // Built-ins (in @kagi/core)
 declare function allOf(...a: Authorizer[]): Authorizer;
 declare function anyOf(...a: Authorizer[]): Authorizer;
-/** Allow when principal.claims[claim] (string[]) contains the door id or "*". */
-declare function claimAllowList(claim: string): Authorizer;
+/** Allow when the claim at a dot path (string[]) contains `${prefix}${door.id}` or `${prefix}*`. */
+declare function claimAllowList(path: string, opts?: { prefix?: string }): Authorizer;
 /** Allow only within weekly windows in a given IANA time zone. */
 declare function timeWindow(opts: { timeZone: string; windows: WeeklyWindow[] }): Authorizer;
 /** Delegate to an external HTTP endpoint (e.g. an HR/shift system). */
@@ -218,10 +256,12 @@ declare function httpAuthorizer(opts: { url: string; headers?: Record<string, st
 ### Audit
 
 ```ts
+// Every event also carries `via` ("web" | "api") when the HTTP adapter set it.
 type AuditEvent =
   | { type: "unlock.denied"; at: Date; requestId: string; principalId: string; doorId: string; reason: string }
-  | { type: "unlock.failed"; at: Date; requestId: string; principalId: string; doorId: string; reason: CommandFailureReason }
-  | { type: "unlock.succeeded"; at: Date; requestId: string; principalId: string; doorId: string; verified: boolean; durationMs: number };
+  | { type: "unlock.failed"; at: Date; requestId: string; principalId: string; doorId: string; reason: CommandFailureReason; detail?: string }
+  // detail: the unclear failure (timeout, network error) that preceded a read-back of "unlocked"
+  | { type: "unlock.succeeded"; at: Date; requestId: string; principalId: string; doorId: string; verified: boolean; durationMs: number; detail?: string };
 
 interface AuditSink {
   record(event: AuditEvent): void | Promise<void>;   // must not throw into the unlock path
@@ -233,20 +273,23 @@ interface AuditSink {
 ```ts
 interface GateOptions {
   doors: DoorConfig[];
-  drivers: Record<string, LockDriver<any>>;
+  drivers: Record<string, LockDriver>;
   authorizer: Authorizer;
   audit?: AuditSink;                 // default: JSON lines to stdout
   commandTimeoutMs?: number;         // default 10_000
-  verify?: { timeoutMs: number; intervalMs: number };  // default 8_000 / 1_000
-  cooldownMs?: number;               // per principal+door, in-memory; default 5_000
+  verify?: { timeoutMs: number; intervalMs: number; clockSkewMs?: number };  // default 8_000 / 1_000 / 2_000
+  cooldownMs?: number;               // per principal+door after a success, in-memory; default 5_000
+  failureCooldownMs?: number;        // after a failure, so repeated presses spare the vendor quota; default 2_000
   now?: () => Date;
 }
 
 type UnlockOutcome =
-  | { status: "unlocked"; verified: boolean }          // verified=false: driver can't read state
+  | { status: "unlocked"; verified: boolean }          // verified=false: no fresh state could be read
   | { status: "denied"; reason: string }
-  | { status: "failed"; reason: CommandFailureReason; retryable: boolean }
-  | { status: "cooldown"; retryAfterMs: number }
+  // uncertain: no clear answer and nothing readable, so the door may already be open
+  | { status: "failed"; reason: CommandFailureReason; retryable: boolean; uncertain?: boolean }
+  | { status: "cooldown"; retryAfterMs: number }       // pressed again soon after a success or failure
+  | { status: "busy" }                                 // pressed again while the previous press runs
   | { status: "unknown_door" };
 
 interface Gate {
@@ -257,18 +300,36 @@ interface Gate {
 declare function createGate(opts: GateOptions): Gate;
 ```
 
-`unlock()` order: door lookup → cooldown → authorize → driver.unlock (with timeout) →
-verify (if `capabilities.readState`: poll `getState` until `unlocked`, or `jammed` → failed) → audit.
+`unlock()` order: door lookup → authorize → in-flight / cooldown check → driver.unlock (with
+timeout) → read back (if `capabilities.readState`: poll `getState` until a fresh `unlocked` or
+`jammed`, for `verify.timeoutMs`; stale readings are skipped) → audit. Authorization comes first
+so a denied person cannot probe the cooldown. The outcome follows what was read back:
+
+| Command | Read back (fresh) | Outcome |
+| --- | --- | --- |
+| accepted | `unlocked` | `unlocked`, verified (also when it was already open, if the reading is fresh) |
+| accepted | `locked` | `failed: not_confirmed`, retryable (nothing opened, e.g. hub offline) |
+| accepted | nothing fresh readable | `unlocked`, verified=false |
+| ambiguous (timeout, network error, 5xx) | `unlocked` | `unlocked`, verified; the audit event keeps the failure in `detail` |
+| ambiguous | `locked` | `failed`, retryable |
+| ambiguous | nothing fresh readable | `failed`, **not** retryable, `uncertain`: the door may be open, check it first |
+| clear refusal (4xx, offline, unauthorized, rate limited, …) | not read | `failed` with the driver's `retryable` |
+| any | `jammed` | `failed: jammed` |
+
+After a success the same person and door wait `cooldownMs`; after a failure `failureCooldownMs`
+(short, so "Try again" works within seconds without hammering the vendor). A press while the
+previous one is still running is `busy`. State reads that fail or time out are logged with the
+request id, and so is a read-back that only ever saw stale readings.
 
 ## HTTP adapter contract (apps/server)
 
 | Route | Behaviour |
 | --- | --- |
-| `GET /d/:doorId` | Unknown door → 404. Not signed in → follow the authenticator's response (sign-in, handshake). Otherwise a page with the door name and one **Unlock** button. (Presence verification: not implemented yet.) |
+| `GET /d/:doorId` | Unknown door → 404. Not signed in → follow the authenticator's response (sign-in, handshake). Otherwise a page with the door name, one **Unlock** button, and a small **Sign out** button when the authenticator has a `logoutPath`. (Presence verification: not implemented yet.) |
 | `GET /healthz` | `ok`, for Cloud Run probes. |
-| `* /auth/*` | Delegated to `Authenticator.handle` (OIDC callback, logout). |
+| `* /auth/*` | Delegated to `Authenticator.handle` (OIDC callback; logout is POST-only and same-origin). |
 | `POST /api/doors/:doorId/unlock` | Only when an API authenticator is configured. Bearer JWT → `gate.unlock()` → JSON `UnlockOutcome`. |
-| `POST /d/:doorId/unlock` | Same-origin check (`hono/csrf`) → authenticate (not signed in → 303 to the door page) → `gate.unlock()` → result page (unlocked / denied / failed / try again). |
+| `POST /d/:doorId/unlock` | Same-origin check (`hono/csrf`) → authenticate (not signed in → 303 to the door page) → `gate.unlock()` → result page. "Try again" only when `retryable`; "check the door first" only when `uncertain`; `busy` is 409. |
 
 Nothing else. No admin UI: doors are config, people are managed in the identity provider.
 

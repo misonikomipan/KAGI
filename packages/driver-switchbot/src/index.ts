@@ -136,8 +136,11 @@ export function normalizeLockState(value: unknown): LockState {
 function toResult(http: number, envelope: Envelope | undefined): CommandResult {
   // 401 is also returned when the 10,000 requests/day quota is exhausted.
   if (http === 401) return { ok: false, reason: "unauthorized", retryable: false, detail: "invalid token/secret or daily quota exceeded" };
+  // Per the API README: "permission denied" or "resource not found" for this account.
+  if (http === 403) return { ok: false, reason: "unauthorized", retryable: false, detail: "HTTP 403: no permission for this device, or it does not exist" };
   if (http === 429) return { ok: false, reason: "rate_limited", retryable: true };
-  if (http >= 500) return { ok: false, reason: "vendor_error", retryable: true, detail: `HTTP ${http}` };
+  // 5xx: no clear answer, the command may still have run. Everything below is a definite answer.
+  if (http >= 500) return { ok: false, reason: "vendor_error", retryable: true, ambiguous: true, detail: `HTTP ${http}` };
   if (!envelope || http !== 200) return { ok: false, reason: "vendor_error", retryable: false, detail: `HTTP ${http}` };
 
   const detail = `statusCode ${envelope.statusCode}: ${envelope.message}`;

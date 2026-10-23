@@ -18,6 +18,7 @@ p { margin: 8px 0; }
 button, .link { display: block; width: 100%; margin-top: 24px; padding: 18px; border: 0; border-radius: 12px; font: inherit; font-size: 1.25rem; font-weight: 600; text-decoration: none; cursor: pointer; }
 button { background: var(--accent); color: var(--accent-fg); }
 .link { background: transparent; color: var(--fg); border: 1px solid var(--line); font-size: 1rem; padding: 14px; }
+.signout button { background: transparent; color: var(--muted); font-size: .875rem; font-weight: 400; padding: 8px; margin-top: 16px; text-decoration: underline; }
 `;
 
 function Layout(props: { m: Messages; title: string; children: Child }) {
@@ -37,7 +38,7 @@ function Layout(props: { m: Messages; title: string; children: Child }) {
   );
 }
 
-export function DoorPage(props: { m: Messages; doorName: string; action: string; userName: string }) {
+export function DoorPage(props: { m: Messages; doorName: string; action: string; userName: string; logoutAction?: string }) {
   const { m } = props;
   return (
     <Layout m={m} title={props.doorName}>
@@ -46,6 +47,11 @@ export function DoorPage(props: { m: Messages; doorName: string; action: string;
       <form method="post" action={props.action}>
         <button type="submit">{m.unlockButton}</button>
       </form>
+      {props.logoutAction && (
+        <form method="post" action={props.logoutAction} class="signout">
+          <button type="submit">{m.signOut}</button>
+        </form>
+      )}
     </Layout>
   );
 }

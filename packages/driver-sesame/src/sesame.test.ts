@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { CommandContext } from "@kagi/core";
 import { aesCmac } from "./cmac.ts";
-import { historyTag, normalizeLockState, sesameDriver, sign } from "./index.ts";
+import { historyTag, normalizeLockState, sesameDriver, shadowTime, sign } from "./index.ts";
 
 describe("aesCmac (RFC 4493 vectors)", () => {
   const key = Buffer.from("2b7e151628aed2a6abf7158809cf4f3c", "hex");
@@ -85,9 +85,36 @@ describe("sesameDriver", () => {
     }
   });
 
-  test("getState reads CHSesame2Status", async () => {
-    const d = sesameDriver({ apiKey: "k", fetch: fakeFetch(200, JSON.stringify({ CHSesame2Status: "unlocked" })).f });
-    expect(await d.getState?.(d.parseDevice({ uuid: UUID, secretKey: SECRET }), ctx())).toBe("unlocked");
+  test("getState reads CHSesame2Status with the shadow timestamp", async () => {
+    const d = sesameDriver({ apiKey: "k", fetch: fakeFetch(200, JSON.stringify({ CHSesame2Status: "unlocked", timestamp: 1598523693 })).f });
+    expect(await d.getState?.(d.parseDevice({ uuid: UUID, secretKey: SECRET }), ctx())).toEqual({ state: "unlocked", observedAt: new Date(1598523693_000) });
+    const noTs = sesameDriver({ apiKey: "k", fetch: fakeFetch(200, JSON.stringify({ CHSesame2Status: "locked" })).f });
+    expect(await noTs.getState?.(noTs.parseDevice({ uuid: UUID, secretKey: SECRET }), ctx())).toEqual({ state: "locked" });
+  });
+
+  test("shadowTime: seconds (as in the docs' example) or milliseconds (as the docs say)", () => {
+    expect(shadowTime(1598523693)).toEqual(new Date(1598523693_000));
+    expect(shadowTime(1598523693_123)).toEqual(new Date(1598523693_123));
+    expect(shadowTime("1598523693")).toBeUndefined();
+    expect(shadowTime(0)).toBeUndefined();
+  });
+
+  test("5xx and network errors are ambiguous; 4xx (e.g. a bad signature) is a clear refusal", async () => {
+    const unlock = async (status: number) => {
+      const d = sesameDriver({ apiKey: "k", fetch: fakeFetch(status, "x").f });
+      return d.unlock(d.parseDevice({ uuid: UUID, secretKey: SECRET }), ctx());
+    };
+    expect(await unlock(502)).toMatchObject({ ok: false, reason: "vendor_error", retryable: true, ambiguous: true });
+    const r = await unlock(400);
+    expect(r).toMatchObject({ ok: false, reason: "vendor_error", retryable: false });
+    expect(r.ok ? undefined : r.ambiguous).toBeUndefined();
+  });
+
+  test("getState: moved is unknown, HTTP 429 throws (the gate logs it and keeps polling)", async () => {
+    const moved = sesameDriver({ apiKey: "k", fetch: fakeFetch(200, JSON.stringify({ CHSesame2Status: "moved" })).f });
+    expect(await moved.getState?.(moved.parseDevice({ uuid: UUID, secretKey: SECRET }), ctx())).toEqual({ state: "unknown" });
+    const limited = sesameDriver({ apiKey: "k", fetch: fakeFetch(429, '{"message":"Limit Exceeded"}').f });
+    await expect(limited.getState?.(limited.parseDevice({ uuid: UUID, secretKey: SECRET }), ctx()) as Promise<unknown>).rejects.toThrow(/rate_limited/);
   });
 
   test("parseDevice rejects bad config", () => {

@@ -74,7 +74,10 @@ export function sesameDriver(opts: SesameOptions): LockDriver<SesameDevice> {
       const text = await res.text();
       const r = toResult(res.status, text);
       if (!r.ok) throw new Error(`sesame: ${r.reason}${r.detail ? ` (${r.detail})` : ""}`);
-      return normalizeLockState((JSON.parse(text) as { CHSesame2Status?: unknown }).CHSesame2Status);
+      const body = JSON.parse(text) as { CHSesame2Status?: unknown; timestamp?: unknown };
+      // The status is the cloud's cached shadow; its timestamp lets the core skip stale values.
+      const observedAt = shadowTime(body.timestamp);
+      return { state: normalizeLockState(body.CHSesame2Status), ...(observedAt && { observedAt }) };
     },
   };
 }
@@ -142,5 +145,16 @@ function toResult(http: number, body: string): CommandResult {
   if (http === 401 || http === 403) return { ok: false, reason: "unauthorized", retryable: false, detail };
   if (http === 404) return { ok: false, reason: "invalid_device", retryable: false, detail };
   if (http === 429) return { ok: false, reason: "rate_limited", retryable: true, detail };
-  return { ok: false, reason: "vendor_error", retryable: http >= 500, detail };
+  // 5xx: no clear answer, the command may still have run. Other 4xx (e.g. a bad signature): refused.
+  if (http >= 500) return { ok: false, reason: "vendor_error", retryable: true, ambiguous: true, detail };
+  return { ok: false, reason: "vendor_error", retryable: false, detail };
+}
+
+/**
+ * The status `timestamp` is when the Sesame shadow was last updated. The docs call it milliseconds,
+ * their example is seconds (1598523693): treat values below 1e12 as seconds.
+ */
+export function shadowTime(value: unknown): Date | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return new Date(value < 1e12 ? value * 1000 : value);
 }

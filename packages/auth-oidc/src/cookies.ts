@@ -26,12 +26,26 @@ export class CookieSealer {
   async open<T extends object>(value: string | undefined, purpose: string): Promise<(T & JWTPayload) | null> {
     if (!value) return null;
     try {
-      const { payload } = await jwtDecrypt(value, await this.#key);
+      const { payload } = await jwtDecrypt(value, await this.#key, {
+        keyManagementAlgorithms: ["dir"],
+        contentEncryptionAlgorithms: ["A256GCM"],
+      });
       return payload.pur === purpose ? (payload as T & JWTPayload) : null;
     } catch {
       return null;
     }
   }
+}
+
+/** Names of all cookies the request carries. */
+export function cookieNames(req: Request): string[] {
+  return (req.headers.get("cookie") ?? "")
+    .split(";")
+    .map((part) => {
+      const i = part.indexOf("=");
+      return i > 0 ? part.slice(0, i).trim() : "";
+    })
+    .filter(Boolean);
 }
 
 export function readCookie(req: Request, name: string): string | undefined {

@@ -45,6 +45,7 @@ export function createKagiApp(opts: KagiAppOptions): Hono {
   });
   // Bearer-token API calls are not exposed to CSRF (browsers never attach the header on their own).
   app.use("/d/*", csrf({ origin }));
+  app.use("/auth/*", csrf({ origin })); // logout is a POST
 
   app.get("/healthz", (c) => c.text("ok"));
 
@@ -65,7 +66,13 @@ export function createKagiApp(opts: KagiAppOptions): Hono {
     if (!auth.ok) return auth.response;
 
     return c.html(
-      <DoorPage m={m} doorName={door.name} action={`${doorPath(door.id)}/unlock`} userName={auth.principal.displayName} />,
+      <DoorPage
+        m={m}
+        doorName={door.name}
+        action={`${doorPath(door.id)}/unlock`}
+        userName={auth.principal.displayName}
+        {...(opts.authenticator.logoutPath && { logoutAction: opts.authenticator.logoutPath })}
+      />,
     );
   });
 
@@ -80,10 +87,11 @@ export function createKagiApp(opts: KagiAppOptions): Hono {
     // Sign-in and session handshakes are GET round-trips; never replay the POST through them.
     if (!auth.ok) return c.redirect(back, 303);
 
-    const outcome = await opts.gate.unlock({ principal: auth.principal, doorId: door.id });
+    // `via` is set here, not by the authenticator, so authorizers can tell the door page from the API.
+    const outcome = await opts.gate.unlock({ principal: { ...auth.principal, via: "web" }, doorId: door.id });
     const view = describe(outcome, m);
     return c.html(
-      <ResultPage m={m} doorName={door.name} ok={view.ok} message={view.message} detail={view.detail} backHref={back} backLabel={view.ok ? m.back : m.retry} />,
+      <ResultPage m={m} doorName={door.name} ok={view.ok} message={view.message} detail={view.detail} backHref={back} backLabel={view.retry ? m.retry : m.back} />,
       view.status,
     );
   });
@@ -98,7 +106,7 @@ export function createKagiApp(opts: KagiAppOptions): Hono {
     app.post("/api/doors/:doorId/unlock", async (c) => {
       const auth = await api.authenticate(publicRequest(c.req.raw), { returnTo: "" });
       if (!auth.ok) return auth.response;
-      const outcome = await opts.gate.unlock({ principal: auth.principal, doorId: c.req.param("doorId") });
+      const outcome = await opts.gate.unlock({ principal: { ...auth.principal, via: "api" }, doorId: c.req.param("doorId") });
       return c.json(outcome, describe(outcome, m).status);
     });
   }
@@ -114,17 +122,29 @@ export function createKagiApp(opts: KagiAppOptions): Hono {
   return app;
 }
 
-function describe(o: UnlockOutcome, m: Messages): { ok: boolean; status: ContentfulStatusCode; message: string; detail?: string } {
+interface View {
+  ok: boolean;
+  /** Offer "Try again" (only when a second command cannot open the door twice). */
+  retry: boolean;
+  status: ContentfulStatusCode;
+  message: string;
+  detail?: string;
+}
+
+function describe(o: UnlockOutcome, m: Messages): View {
   switch (o.status) {
     case "unlocked":
-      return { ok: true, status: 200, message: o.verified ? m.unlocked : m.unlockedUnverified };
+      return { ok: true, retry: false, status: 200, message: o.verified ? m.unlocked : m.unlockedUnverified };
     case "denied":
-      return { ok: false, status: 403, message: m.denied };
+      return { ok: false, retry: false, status: 403, message: m.denied };
     case "failed":
-      return { ok: false, status: 502, message: m.failed[o.reason] };
+      // "Check the door first" only when the command may have gone through (no clear answer).
+      return { ok: false, retry: o.retryable, status: 502, message: m.failed[o.reason], ...(o.uncertain && { detail: m.checkDoorFirst }) };
     case "cooldown":
-      return { ok: false, status: 429, message: m.cooldown(Math.ceil(o.retryAfterMs / 1000)) };
+      return { ok: false, retry: true, status: 429, message: m.cooldown(Math.ceil(o.retryAfterMs / 1000)) };
+    case "busy":
+      return { ok: false, retry: false, status: 409, message: m.busy };
     case "unknown_door":
-      return { ok: false, status: 404, message: m.notFound };
+      return { ok: false, retry: false, status: 404, message: m.notFound };
   }
 }

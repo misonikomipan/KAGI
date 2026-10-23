@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
-import { type Authenticator, createGate, type LockDriver, type Principal } from "@kagi/core";
-import { createKagiApp } from "./index.tsx";
+import { oidcAuthenticator } from "@kagi/auth-oidc";
+import { type Authenticator, createGate, type Gate, type LockDriver, type Principal, type UnlockOutcome } from "@kagi/core";
+import { createKagiApp, en } from "./index.tsx";
 
 const ORIGIN = "https://door.example.com";
 const alice: Principal = { id: "u_alice", displayName: "Alice", claims: { publicMetadata: { doors: ["office"] } } };
@@ -147,4 +148,111 @@ test("denied POST is 403", async () => {
   const res = await app.request(post("/d/office/unlock"));
   expect(res.status).toBe(403);
   expect(unlocks()).toBe(0);
+});
+
+/** A gate that returns a fixed outcome and records who asked. */
+function stubGate(outcome: UnlockOutcome) {
+  const seen: Principal[] = [];
+  const gate: Gate = {
+    door: (id) => (id === "office" ? { id, name: "Office", driver: "fake", device: {} } : undefined),
+    async unlock({ principal }) {
+      seen.push(principal);
+      return outcome;
+    },
+  };
+  return { gate, seen };
+}
+const signedIn: Authenticator = { authenticate: async () => ({ ok: true, principal: alice }) };
+
+test("a retryable failure offers Try again; an ambiguous one says check the door first", async () => {
+  const retryable = createKagiApp({ gate: stubGate({ status: "failed", reason: "not_confirmed", retryable: true }).gate, authenticator: signedIn, publicOrigin: ORIGIN, messages: en });
+  const html1 = await (await retryable.request(post("/d/office/unlock"))).text();
+  expect(html1).toContain(en.failed.not_confirmed);
+  expect(html1).toContain(`>${en.retry}<`);
+
+  const ambiguous = createKagiApp({ gate: stubGate({ status: "failed", reason: "timeout", retryable: false, uncertain: true }).gate, authenticator: signedIn, publicOrigin: ORIGIN, messages: en });
+  const html2 = await (await ambiguous.request(post("/d/office/unlock"))).text();
+  expect(html2).toContain(en.checkDoorFirst);
+  expect(html2).not.toContain(`>${en.retry}<`);
+
+  // A clear, final refusal (nothing reached the lock) must not suggest the door may be open.
+  const refused = createKagiApp({ gate: stubGate({ status: "failed", reason: "unauthorized", retryable: false }).gate, authenticator: signedIn, publicOrigin: ORIGIN, messages: en });
+  const html3 = await (await refused.request(post("/d/office/unlock"))).text();
+  expect(html3).toContain(en.failed.unauthorized);
+  expect(html3).not.toContain(en.checkDoorFirst);
+});
+
+test("a press while the previous one is running says so (409), not a made-up wait time", async () => {
+  const app = createKagiApp({ gate: stubGate({ status: "busy" }).gate, authenticator: signedIn, publicOrigin: ORIGIN, messages: en });
+  const res = await app.request(post("/d/office/unlock"));
+  expect(res.status).toBe(409);
+  expect(await res.text()).toContain(en.busy);
+});
+
+test("the door page offers sign-out only when the authenticator supports it", async () => {
+  const gate = stubGate({ status: "unknown_door" }).gate;
+  const withLogout = createKagiApp({ gate, authenticator: { ...signedIn, logoutPath: "/auth/logout" }, publicOrigin: ORIGIN, messages: en });
+  const html = await (await withLogout.request("http://internal/d/office")).text();
+  expect(html).toContain('action="/auth/logout"');
+  expect(html).toContain(`>${en.signOut}<`);
+  const without = createKagiApp({ gate, authenticator: signedIn, publicOrigin: ORIGIN, messages: en });
+  expect(await (await without.request("http://internal/d/office")).text()).not.toContain("/auth/logout");
+});
+
+test("the route, not the identity provider, says whether a request came from the web or the API", async () => {
+  const { gate, seen } = stubGate({ status: "unlocked", verified: true });
+  const sneaky: Authenticator = { authenticate: async () => ({ ok: true, principal: { ...alice, via: "api" } }) };
+  const app = createKagiApp({ gate, authenticator: sneaky, publicOrigin: ORIGIN, api: sneaky });
+  await app.request(post("/d/office/unlock"));
+  await app.request("http://internal/api/doors/office/unlock", { method: "POST" });
+  expect(seen.map((p) => p.via)).toEqual(["web", "api"]);
+});
+
+test("logout from another origin is rejected (CSRF)", async () => {
+  const handled: string[] = [];
+  const auth: Authenticator = {
+    ...signedIn,
+    handle: async (req) => {
+      handled.push(req.method);
+      return new Response("bye");
+    },
+  };
+  const app = createKagiApp({ gate: stubGate({ status: "unknown_door" }).gate, authenticator: auth, publicOrigin: ORIGIN });
+  expect((await app.request(post("/auth/logout", "https://evil.example"))).status).toBe(403);
+  expect((await app.request(post("/auth/logout"))).status).toBe(200);
+  expect(handled).toEqual(["POST"]);
+});
+
+test("behind a TLS-terminating proxy, the OIDC redirect_uri is the public https URL", async () => {
+  const issuer = "https://id.example.com";
+  const discovery = (async () =>
+    Response.json({
+      issuer,
+      authorization_endpoint: `${issuer}/authorize`,
+      token_endpoint: `${issuer}/token`,
+      jwks_uri: `${issuer}/jwks`,
+      response_types_supported: ["code"],
+      code_challenge_methods_supported: ["S256"],
+    })) as unknown as typeof fetch;
+  const authenticator = oidcAuthenticator({ issuer, clientId: "kagi", publicOrigin: ORIGIN, sessionSecret: "x".repeat(32), fetch: discovery });
+  const app = createKagiApp({ gate: stubGate({ status: "unknown_door" }).gate, authenticator, publicOrigin: ORIGIN });
+  // Cloud Run hands the app http://<internal host>/…
+  const res = await app.request("http://10.0.0.7:8080/d/office");
+  expect(res.status).toBe(303);
+  const authorize = new URL(res.headers.get("location") ?? "");
+  expect(authorize.searchParams.get("redirect_uri")).toBe(`${ORIGIN}/auth/callback`);
+  expect(res.headers.getSetCookie()[0]).toMatch(/^__Host-kagi_login_.*; Secure/);
+});
+
+test("the identity provider being down shows a 503 page on GET and POST", async () => {
+  const down: Authenticator = {
+    authenticate: async () => {
+      throw new Error("connect ECONNREFUSED");
+    },
+  };
+  const app = createKagiApp({ gate: stubGate({ status: "unknown_door" }).gate, authenticator: down, publicOrigin: ORIGIN, messages: en });
+  const get = await app.request("http://internal/d/office");
+  expect(get.status).toBe(503);
+  expect(await get.text()).toContain(en.unavailable);
+  expect((await app.request(post("/d/office/unlock"))).status).toBe(503);
 });
