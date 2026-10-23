@@ -1,0 +1,526 @@
+<title>KAGI Architecture</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<style>
+/* Layout: one working screen. Header with the four C4 zoom levels, the diagram canvas, and an
+   inspector that shows the evidence (file:line) behind every element and relation. */
+:root {
+  --bg: #f3f5f8;
+  --surface: #ffffff;
+  --fg: #16202c;
+  --muted: #5b6878;
+  --line: #d9dfe7;
+  --accent: #1168bd;          /* C4 "software system" blue */
+  --person: #08427b;
+  --container: #438dd5;
+  --component: #85bbf0;
+  --component-fg: #0b2540;
+  --external: #8a96a3;
+  --manual: #b26a00;          /* hand-added elements, not from analysis */
+  --fn: #e8eef6;
+  --fn-fg: #16202c;
+  --edge: #7d8b9b;
+  --wire: #1f8a80;          /* wiring (creates) */
+  --add: #1a7f37;
+  --del: #cf222e;
+  --chg: #8250df;
+  --focus: #f0a400;
+  --font-ui: "IBM Plex Sans", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --font-display: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e141b; --surface: #151d27; --fg: #e3e9f0; --muted: #93a1b1; --line: #263241;
+    --accent: #5aa4ec; --person: #2a6db3; --container: #3a7cc4; --component: #8fc0f2; --component-fg: #0b2540;
+    --external: #5d6a78; --manual: #f0a54a; --fn: #1d2733; --fn-fg: #dbe3ec; --edge: #6d7d8f; --wire: #4fbfb3; --focus: #ffc23d;
+    --add: #3fb950; --del: #f85149; --chg: #b392f0;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e141b; --surface: #151d27; --fg: #e3e9f0; --muted: #93a1b1; --line: #263241;
+  --accent: #5aa4ec; --person: #2a6db3; --container: #3a7cc4; --component: #8fc0f2; --component-fg: #0b2540;
+  --external: #5d6a78; --manual: #f0a54a; --fn: #1d2733; --fn-fg: #dbe3ec; --edge: #6d7d8f; --wire: #4fbfb3; --focus: #ffc23d;
+  --add: #3fb950; --del: #f85149; --chg: #b392f0;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: 14px; line-height: 1.5;
+  display: grid; grid-template-rows: auto 1fr; min-height: 0;
+}
+header {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px;
+  padding-block: 12px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  border-bottom: 1px solid var(--line); background: var(--surface);
+}
+h1 { font-family: var(--font-display); font-size: 1.25rem; font-weight: 600; margin: 0; letter-spacing: .01em; text-wrap: balance; }
+h1 small { font-family: var(--font-mono); font-weight: 400; font-size: .75rem; color: var(--muted); margin-left: 8px; }
+nav.levels { display: flex; gap: 4px; flex-wrap: wrap; }
+nav.levels button {
+  font: inherit; font-size: .8125rem; border: 1px solid var(--line); background: transparent; color: var(--fg);
+  padding: 6px 10px; border-radius: 6px; cursor: pointer; display: inline-flex; gap: 6px; align-items: baseline;
+}
+nav.levels button .n { font-family: var(--font-mono); font-size: .6875rem; color: var(--muted); letter-spacing: .04em; }
+nav.levels button[aria-current="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+nav.levels button[aria-current="true"] .n { color: rgba(255,255,255,.75); }
+nav.levels button:disabled { opacity: .45; cursor: default; }
+.badge { font-family: var(--font-mono); font-size: .625rem; display: inline-flex; gap: 4px; }
+.badge .a { color: var(--add); } .badge .d { color: var(--del); } .badge .c { color: var(--chg); }
+nav.levels button[aria-current="true"] .badge span { color: #fff; }
+.chip.added { border-color: var(--add); color: var(--add); }
+.chip.removed { border-color: var(--del); color: var(--del); }
+.chip.changed { border-color: var(--chg); color: var(--chg); }
+.before { font-family: var(--font-mono); font-size: .6875rem; color: var(--del); text-decoration: line-through; overflow-wrap: anywhere; }
+.mark { font-family: var(--font-mono); font-size: .625rem; }
+.mark.added { color: var(--add); } .mark.removed { color: var(--del); } .mark.changed { color: var(--chg); }
+.crumbs { font-size: .8125rem; color: var(--muted); flex: 1 1 240px; min-width: 0; }
+.crumbs a { color: var(--accent); text-decoration: none; cursor: pointer; }
+.crumbs a:hover { text-decoration: underline; }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 0; }
+.stage { position: relative; min-height: 0; min-width: 0; }
+#cy { position: absolute; inset: 0; }
+.tools {
+  position: absolute; top: 12px; left: max(12px, env(safe-area-inset-left, 0px)); display: flex; flex-wrap: wrap; gap: 6px; z-index: 2;
+}
+.tools button, .tools label {
+  font: inherit; font-size: .75rem; background: var(--surface); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 9px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+}
+.tools input { accent-color: var(--accent); margin: 0; }
+.legend {
+  position: absolute; bottom: 12px; left: max(12px, env(safe-area-inset-left, 0px)); z-index: 2; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: grid; grid-template-columns: repeat(3, auto); gap: 4px 14px;
+  font-size: .6875rem; color: var(--muted); max-width: calc(100% - 24px);
+}
+.legend span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.sw { width: 14px; height: 10px; border-radius: 3px; display: inline-block; }
+.sw.line { height: 0; border-top: 2px solid var(--edge); border-radius: 0; width: 18px; }
+.sw.wire { border-top-style: dashed; border-color: var(--wire); }
+.sw.add { border: 2px solid var(--add); background: transparent; } .sw.del { border: 2px dashed var(--del); background: transparent; } .sw.chg { border: 2px solid var(--chg); background: transparent; }
+.sw.manual { border: 1.5px dashed var(--manual); background: transparent; }
+.sw.manual.line { border-width: 2px 0 0; }
+aside {
+  border-left: 1px solid var(--line); background: var(--surface); overflow-y: auto; min-width: 0;
+  padding-block: 16px; padding-left: 16px; padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 14px;
+}
+aside h2 { font-family: var(--font-display); font-size: 1.0625rem; margin: 0; overflow-wrap: anywhere; }
+.kind { font-size: .6875rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.chip { display: inline-block; font-size: .6875rem; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.chip.manual { border: 1px dashed var(--manual); color: var(--manual); }
+.tech { font-family: var(--font-mono); font-size: .75rem; color: var(--muted); overflow-wrap: anywhere; }
+.desc { margin: 0; max-width: 65ch; }
+.btn {
+  font: inherit; font-size: .8125rem; font-weight: 500; background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+  padding: 7px 12px; cursor: pointer; align-self: flex-start;
+}
+.section-title { font-size: .6875rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 4px 0 -6px; }
+ul.rel, ul.evidence { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+ul.rel li button {
+  font: inherit; text-align: left; width: 100%; background: transparent; border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 8px; color: var(--fg); cursor: pointer; display: grid; gap: 2px;
+}
+ul.rel li button:hover { border-color: var(--accent); }
+.rel-head { font-size: .8125rem; overflow-wrap: anywhere; }
+.rel-label { font-family: var(--font-mono); font-size: .6875rem; color: var(--muted); overflow-wrap: anywhere; }
+.cond { font-family: var(--font-mono); font-size: .6875rem; color: var(--wire); overflow-wrap: anywhere; }
+ul.evidence li { border-left: 2px solid var(--line); padding-left: 8px; min-width: 0; }
+ul.evidence a { font-family: var(--font-mono); font-size: .75rem; color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
+ul.evidence a:hover { text-decoration: underline; }
+ul.evidence code { display: block; font-family: var(--font-mono); font-size: .6875rem; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.empty { color: var(--muted); margin: 0; max-width: 65ch; }
+.empty b { color: var(--fg); font-weight: 500; }
+.foot { margin-top: auto; font-size: .6875rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 10px; }
+.foot code { font-family: var(--font-mono); }
+button:focus-visible, a:focus-visible, label:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+#legend-toggle { display: none; }
+@media (max-width: 820px) {
+  main { grid-template-columns: minmax(0, 1fr); grid-template-rows: 62vh auto; }
+  aside { border-left: 0; border-top: 1px solid var(--line); padding-left: max(16px, env(safe-area-inset-left, 0px)); }
+  .legend { grid-template-columns: repeat(2, auto); display: none; top: 52px; bottom: auto; }
+  .legend.open { display: grid; }
+  #legend-toggle { display: inline-flex; }
+}
+</style>
+
+<header>
+  <h1>KAGI architecture <small id="commit"></small></h1>
+  <nav class="levels" id="levels" aria-label="C4 level"></nav>
+  <div class="crumbs" id="crumbs"></div>
+</header>
+<main>
+  <div class="stage">
+    <div class="tools">
+      <button id="fit" type="button">Fit</button>
+      <button id="legend-toggle" type="button" aria-controls="legend" aria-expanded="false">Legend</button>
+      <label for="opt-wiring"><input id="opt-wiring" type="checkbox"> Wiring</label>
+      <label for="opt-labels"><input id="opt-labels" type="checkbox"> Edge labels</label>
+      <label for="opt-manual"><input id="opt-manual" type="checkbox" checked> Hand-added</label>
+      <label for="opt-diff" hidden><input id="opt-diff" type="checkbox" checked> <span id="opt-diff-label">Diff</span></label>
+      <label for="opt-focus" hidden><input id="opt-focus" type="checkbox"> Changes only</label>
+    </div>
+    <div id="cy" role="img" aria-label="Architecture diagram"></div>
+    <div class="legend" id="legend"></div>
+  </div>
+  <aside id="inspector" aria-live="polite"></aside>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+<script>
+const MODEL = /*__MODEL__*/null;
+(() => {
+  if (window.cytoscapeDagre) cytoscape.use(window.cytoscapeDagre);
+  const M = MODEL;
+  const nodeById = new Map(M.nodes.map((n) => [n.id, n]));
+  const viewById = new Map(M.views.map((v) => [v.id, v]));
+  const ctxView = M.views.find((v) => v.level === "context");
+  const ctrView = M.views.find((v) => v.level === "container");
+  const cmpView = M.views.find((v) => v.level === "component");
+  const LEVELS = [
+    { n: "L1", name: "Context", view: ctxView.id },
+    { n: "L2", name: "Containers", view: ctrView.id },
+    { n: "L3", name: "Components", view: cmpView.id },
+    { n: "L4", name: "Code", view: null },
+  ];
+  const levelOf = { context: 0, container: 1, component: 2, code: 3 };
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const ghLink = (e, removed) => `${M.repository}/blob/${(removed ? M.base?.commit : M.generatedFrom?.replace(/\+dirty$/, "")) || "main"}/${e.file}#L${e.line}`;
+  const diffOn = () => !!M.base && $("opt-diff").checked;
+  /** Changes in one view, or across all code views for "code". */
+  function changesIn(vid) {
+    const isCode = vid === "code";
+    const nodeIds = isCode ? null : new Set(viewById.get(vid).nodes);
+    const nodes = M.nodes.filter((n) => n.diff && (isCode ? n.level.includes("code") : nodeIds.has(n.id)));
+    const edges = M.edges.filter((e) => e.diff && (isCode ? viewById.get(e.view)?.level === "code" : e.view === vid));
+    const c = { added: 0, removed: 0, changed: 0 };
+    for (const x of [...nodes, ...edges]) c[x.diff]++;
+    return { nodes, edges, c };
+  }
+  const markOf = (d) => `<span class="mark ${d}">${d === "added" ? "+ " : d === "removed" ? "\u2212 " : "~ "}</span>`;
+  const badge = (c) => (c.added || c.removed || c.changed)
+    ? `<span class="badge">${c.added ? `<span class="a">+${c.added}</span>` : ""}${c.removed ? `<span class="d">\u2212${c.removed}</span>` : ""}${c.changed ? `<span class="c">~${c.changed}</span>` : ""}</span>` : "";
+  const diffChip = (x) => (diffOn() && x.diff) ? `<span class="chip ${x.diff}">${x.diff === "added" ? "Added" : x.diff === "removed" ? "Removed" : "Changed"} since ${esc(M.base.ref)}</span>` : "";
+  const beforeList = (x) => (diffOn() && x.before) ? Object.entries(x.before).map(([k, v]) => `<div class="before">${esc(k)}: ${esc(v ?? "(none)")}</div>`).join("") : "";
+
+  // Bare-token hashes: #context, #containers, #components, #code-<component>
+  const slug = (s) => s.replace(/^(cmp|route):/, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const tokenOf = (vid) => {
+    const v = viewById.get(vid);
+    if (v.level === "context") return "context";
+    if (v.level === "container") return "containers";
+    if (v.level === "component") return "components";
+    return `code-${slug(v.subject)}`;
+  };
+  const viewOfToken = new Map(M.views.map((v) => [tokenOf(v.id), v.id]));
+  /** Which view a node drills down into. */
+  const drillOf = (id) => {
+    if (id === ctxView.subject) return ctrView.id;
+    if (id === cmpView.subject) return cmpView.id;
+    if (viewById.has(`code:${id}`)) return `code:${id}`;
+    return null;
+  };
+
+  let current = ctxView.id;
+  let lastCode = null;
+  let cy;
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  function style() {
+    const ui = css("--font-ui"), mono = css("--font-mono");
+    return [
+      { selector: "node", style: {
+        shape: "round-rectangle", "corner-radius": 6, label: "data(label)", "text-wrap": "wrap", "text-max-width": "data(maxw)",
+        "text-valign": "center", "text-halign": "center", "font-family": ui, "font-size": 12, "line-height": 1.35,
+        width: "label", height: "label", padding: "12px", color: "#fff", "background-color": css("--external"),
+        "border-width": 0, "transition-property": "opacity", "transition-duration": "120ms" } },
+      { selector: "node.person", style: { "background-color": css("--person"), "corner-radius": 18 } },
+      { selector: "node.system", style: { "background-color": css("--accent") } },
+      { selector: "node.container", style: { "background-color": css("--container") } },
+      { selector: "node.component", style: { "background-color": css("--component"), color: css("--component-fg") } },
+      { selector: "node.external", style: { "background-color": css("--external") } },
+      { selector: "node.function", style: { "background-color": css("--fn"), color: css("--fn-fg"), "font-family": mono, "font-size": 11, "border-width": 1, "border-color": css("--line"), padding: "8px" } },
+      { selector: "node.interface", style: { shape: "cut-rectangle", "background-color": css("--surface"), color: css("--fg"), "border-width": 1.5, "border-color": css("--accent"), "font-family": mono, "font-size": 10 } },
+      { selector: "node.library", style: { "background-color": css("--surface"), color: css("--muted"), "border-width": 1, "border-color": css("--line"), "border-style": "dashed", "font-family": mono, "font-size": 10 } },
+      { selector: "node.root", style: { "border-width": 2, "border-color": css("--accent") } },
+      { selector: "node.manual", style: { "border-width": 2, "border-style": "dashed", "border-color": css("--manual") } },
+      { selector: "node.drill", style: { "border-width": 2, "border-color": css("--fg"), "border-opacity": 0.35 } },
+      { selector: "node.manual.drill", style: { "border-color": css("--manual"), "border-opacity": 1 } },
+      { selector: ":parent", style: {
+        shape: "round-rectangle", "background-color": css("--accent"), "background-opacity": 0.05, "border-width": 1.5, "border-style": "dashed",
+        "border-color": css("--accent"), color: css("--accent"), "text-valign": "top", "text-halign": "left", "text-margin-x": 12, "text-margin-y": -8,
+        "font-family": ui, "font-weight": 600, "font-size": 12, padding: "24px", label: "data(label)" } },
+      { selector: "edge", style: {
+        width: 1.4, "curve-style": "bezier", "line-color": css("--edge"), "target-arrow-color": css("--edge"), "target-arrow-shape": "triangle",
+        "arrow-scale": 0.9, label: "", "font-family": mono, "font-size": 9, color: css("--muted"), "text-wrap": "wrap", "text-max-width": "160px",
+        "text-background-color": css("--bg"), "text-background-opacity": 0.9, "text-background-padding": "2px", "text-rotation": "autorotate" } },
+      { selector: "edge.wires", style: { "line-style": "dashed", "line-color": css("--wire"), "target-arrow-color": css("--wire"), "target-arrow-shape": "vee" } },
+      { selector: "edge.defines", style: { "line-style": "dotted", "target-arrow-shape": "none" } },
+      { selector: "edge.manual", style: { "line-style": "dashed", "line-color": css("--manual"), "target-arrow-color": css("--manual") } },
+      { selector: "edge.conditional", style: { "line-dash-pattern": [6, 3] } },
+      { selector: "edge.labelled", style: { label: "data(label)" } },
+      { selector: "node.diff-added", style: { "border-width": 3, "border-style": "solid", "border-color": css("--add"), "border-opacity": 1 } },
+      { selector: "node.diff-changed", style: { "border-width": 3, "border-style": "solid", "border-color": css("--chg"), "border-opacity": 1 } },
+      { selector: "node.diff-removed", style: { "border-width": 3, "border-style": "dashed", "border-color": css("--del"), "border-opacity": 1, opacity: 0.6 } },
+      { selector: "edge.diff-added", style: { width: 2.4, "line-color": css("--add"), "target-arrow-color": css("--add") } },
+      { selector: "edge.diff-changed", style: { width: 2.4, "line-color": css("--chg"), "target-arrow-color": css("--chg") } },
+      { selector: "edge.diff-removed", style: { width: 2, "line-style": "dashed", "line-color": css("--del"), "target-arrow-color": css("--del"), opacity: 0.7 } },
+      { selector: ".unchanged-faded", style: { opacity: 0.12 } },
+      { selector: ".faded", style: { opacity: 0.15 } },
+      { selector: "node:selected", style: { "border-width": 3, "border-color": css("--focus"), "border-style": "solid", "border-opacity": 1 } },
+      { selector: "edge:selected", style: { width: 3, "line-color": css("--focus"), "target-arrow-color": css("--focus"), label: "data(label)" } },
+    ];
+  }
+
+  function elementsFor(vid) {
+    const v = viewById.get(vid);
+    const level = levelOf[v.level];
+    const els = [];
+    const boundary = v.level === "container" ? ctxView.subject : v.level === "component" ? cmpView.subject : null;
+    if (boundary) {
+      const b = nodeById.get(boundary);
+      els.push({ data: { id: `boundary:${boundary}`, label: `${b.name}${b.technology ? `  [${b.technology}]` : ""}` }, classes: "boundary" });
+    }
+    const inside = (n) => (v.level === "container" && n.kind === "container") || (v.level === "component" && n.kind === "component");
+    for (const id of v.nodes) {
+      const n = nodeById.get(id);
+      if (!n || (n.manual && !$("opt-manual").checked)) continue;
+      if (n.diff === "removed" && !diffOn()) continue;
+      const tech = n.technology ? `\n[${n.technology}]` : "";
+      const desc = level <= 1 && n.description ? `\n\n${n.description}` : "";
+      const classes = [n.kind, n.manual ? "manual" : "", drillOf(id) && drillOf(id) !== vid ? "drill" : "", v.level === "code" && id === v.subject ? "root" : "", diffOn() && n.diff ? `diff-${n.diff}` : ""];
+      els.push({
+        data: { id, label: `${n.name}${tech}${desc}`, maxw: level <= 1 ? "190px" : n.kind === "function" ? "170px" : "200px", ...(boundary && inside(n) && { parent: `boundary:${boundary}` }) },
+        classes: classes.filter(Boolean).join(" "),
+      });
+    }
+    const present = new Set(els.map((e) => e.data.id));
+    M.edges.forEach((e, i) => {
+      if (e.view !== vid || !present.has(e.from) || !present.has(e.to)) return;
+      if (e.kind === "wires" && !$("opt-wiring").checked) return;
+      if (e.manual && !$("opt-manual").checked) return;
+      if (e.diff === "removed" && !diffOn()) return;
+      els.push({
+        data: { id: `e${i}`, source: e.from, target: e.to, label: e.condition ? `${e.label}\n[${e.condition}]` : e.label, idx: i },
+        classes: [e.kind, e.manual ? "manual" : "", e.condition ? "conditional" : "", $("opt-labels").checked ? "labelled" : "", diffOn() && e.diff ? `diff-${e.diff}` : ""].filter(Boolean).join(" "),
+      });
+    });
+    return els;
+  }
+
+  function layoutFor(vid) {
+    const lvl = viewById.get(vid).level;
+    return { name: window.cytoscapeDagre ? "dagre" : "breadthfirst", rankDir: lvl === "component" || lvl === "code" ? "LR" : "TB",
+      nodeSep: lvl === "code" ? 18 : 28, rankSep: lvl === "component" ? 80 : 70, edgeSep: 12, padding: 56, fit: true, animate: false };
+  }
+
+  function render(vid, { keepHash } = {}) {
+    current = vid;
+    const v = viewById.get(vid);
+    if (v.level === "code") lastCode = vid;
+    if (!keepHash) try { history.replaceState(null, "", `#${tokenOf(vid)}`); } catch {}
+    $("opt-labels").checked = $("opt-labels").dataset.user ? $("opt-labels").checked : levelOf[v.level] <= 1;
+    $("opt-wiring").closest("label").hidden = v.level !== "component";
+    cy.elements().remove();
+    cy.resize();
+    cy.add(elementsFor(vid));
+    cy.layout(layoutFor(vid)).run();
+    applyFocus();
+    renderNav();
+    showOverview();
+  }
+
+  /** "Changes only": fade everything that is neither changed nor attached to a change. */
+  function applyFocus() {
+    cy.elements().removeClass("unchanged-faded");
+    if (!diffOn() || !$("opt-focus").checked) return;
+    const changed = cy.elements(".diff-added, .diff-removed, .diff-changed");
+    const keep = changed.union(changed.connectedNodes()).union(changed.ancestors());
+    cy.elements().not(keep).addClass("unchanged-faded");
+  }
+
+  function renderNav() {
+    const v = viewById.get(current);
+    const lvl = levelOf[v.level];
+    $("levels").innerHTML = LEVELS.map((l, i) => {
+      const target = l.view ?? lastCode;
+      const b = diffOn() ? badge(changesIn(l.view ?? "code").c) : "";
+      return `<button type="button" data-view="${esc(target ?? "")}" aria-current="${i === lvl}" ${target ? "" : "disabled title=\"Open a component first\""}><span class="n">${l.n}</span>${l.name}${b}</button>`;
+    }).join("");
+    const trail = [ctxView.id];
+    if (lvl >= 1) trail.push(ctrView.id);
+    if (lvl >= 2) trail.push(cmpView.id);
+    if (lvl >= 3) trail.push(current);
+    $("crumbs").innerHTML = trail.map((t, i) => (i === trail.length - 1 ? esc(viewById.get(t).title) : `<a data-view="${esc(t)}" tabindex="0">${esc(viewById.get(t).title)}</a>`)).join(" › ");
+  }
+
+  function relations(id) {
+    const out = [], inc = [];
+    M.edges.forEach((e, i) => {
+      if (e.view !== current || (e.diff === "removed" && !diffOn())) return;
+      if (e.from === id) out.push([e, i]);
+      if (e.to === id) inc.push([e, i]);
+    });
+    const li = ([e, i], other) =>
+      `<li><button type="button" data-edge="e${i}"><span class="rel-head">${diffOn() && e.diff ? markOf(e.diff) : ""}${esc(nodeById.get(other)?.name ?? other)}</span><span class="rel-label">${esc(e.label)}</span>${e.condition ? `<span class="cond">when ${esc(e.condition)}</span>` : ""}</button></li>`;
+    return (out.length ? `<p class="section-title">Uses (${out.length})</p><ul class="rel">${out.map((r) => li(r, r[0].to)).join("")}</ul>` : "") +
+      (inc.length ? `<p class="section-title">Used by (${inc.length})</p><ul class="rel">${inc.map((r) => li(r, r[0].from)).join("")}</ul>` : "");
+  }
+
+  function evidenceList(evs, removed) {
+    if (!evs?.length) return "";
+    return `<p class="section-title">Evidence (${evs.length})</p><ul class="evidence">${evs
+      .map((e) => `<li><a href="${esc(ghLink(e, removed))}" target="_blank" rel="noopener">${esc(e.file)}:${e.line}</a><code>${esc(e.text)}</code></li>`)
+      .join("")}</ul>`;
+  }
+
+  function showNode(id) {
+    const n = nodeById.get(id);
+    if (!n) return;
+    const drill = drillOf(id);
+    $("inspector").innerHTML = `
+      <div><div class="kind">${esc(n.kind)}${n.group ? ` · ${esc(n.group)}` : ""}</div><h2>${esc(n.name)}</h2></div>
+      ${n.manual ? `<span class="chip manual">Hand-added, not from analysis</span>` : ""}
+      ${diffChip(n)}
+      ${n.technology ? `<div class="tech">${esc(n.technology)}</div>` : ""}
+      ${beforeList(n)}
+      ${n.description ? `<p class="desc">${esc(n.description)}</p>` : ""}
+      ${drill && drill !== current ? `<button class="btn" type="button" data-view="${esc(drill)}">Zoom in: ${esc(viewById.get(drill).title)}</button>` : ""}
+      ${n.source ? evidenceList([n.source], n.diff === "removed").replace("Evidence (1)", "Defined at") : ""}
+      ${relations(id)}
+      ${footer()}`;
+  }
+
+  function showEdge(idx) {
+    const e = M.edges[idx];
+    $("inspector").innerHTML = `
+      <div><div class="kind">${esc(e.kind)}${e.manual ? "" : " · from analysis"}</div>
+      <h2>${esc(nodeById.get(e.from)?.name)} → ${esc(nodeById.get(e.to)?.name)}</h2></div>
+      ${e.manual ? `<span class="chip manual">Hand-added, not from analysis</span>` : ""}
+      ${diffChip(e)}
+      <div class="tech">${esc(e.label)}</div>
+      ${e.condition ? `<div class="cond">when ${esc(e.condition)}</div>` : ""}
+      ${beforeList(e)}
+      ${evidenceList(e.evidence, e.diff === "removed")}
+      ${footer()}`;
+  }
+
+  function showOverview() {
+    const v = viewById.get(current);
+    const hints = {
+      context: "KAGI as one box: who uses it and which outside systems it talks to. Click <b>KAGI</b> and zoom in to see its containers.",
+      container: "What runs: the KAGI server (Cloud Run) and the probe CLI for testing a lock from a terminal. Zoom into <b>KAGI server</b> for its components.",
+      component: "Routes on the left, the core in the middle, plug-ins (authenticators, authorizers, lock drivers, audit) and outside systems on the right. Dashed teal lines are wiring (turn on <b>Wiring</b>). Zoom into any component for its code.",
+      code: "Functions in this component and what they call: other functions, core port interfaces, libraries and outside systems.",
+    };
+    const stats = { nodes: v.nodes.length, edges: M.edges.filter((e) => e.view === current).length, manual: M.edges.filter((e) => e.view === current && e.manual).length };
+    $("inspector").innerHTML = `
+      <div><div class="kind">${esc(LEVELS[levelOf[v.level]].n)} · ${esc(LEVELS[levelOf[v.level]].name)}</div><h2>${esc(v.title)}</h2></div>
+      <p class="empty">${hints[v.level]}</p>
+      <p class="empty">${stats.nodes} elements, ${stats.edges} relations (${stats.manual} hand-added). Select anything to see the file and line it was found at.</p>
+      ${diffSection()}
+      ${footer()}`;
+  }
+
+  function diffSection() {
+    if (!diffOn()) return "";
+    const ch = changesIn(current);
+    const items = [
+      ...ch.nodes.map((n) => `<button type="button" data-select="${esc(n.id)}"><span class="rel-head">${markOf(n.diff)}${esc(n.name)}</span><span class="rel-label">${esc(n.kind)}</span></button>`),
+      ...ch.edges.map((e) => `<button type="button" data-edge="e${M.edges.indexOf(e)}"><span class="rel-head">${markOf(e.diff)}${esc(nodeById.get(e.from)?.name)} \u2192 ${esc(nodeById.get(e.to)?.name)}</span><span class="rel-label">${esc(e.label)}</span></button>`),
+    ];
+    const head = `<p class="section-title">Changes since ${esc(M.base.ref)} (${esc(M.base.commit)}) ${badge(ch.c)}</p>`;
+    if (!items.length) return `${head}<p class="empty">No structural changes at this level.</p>`;
+    return `${head}<ul class="rel">${items.slice(0, 80).map((x) => `<li>${x}</li>`).join("")}</ul>${items.length > 80 ? `<p class="empty">and ${items.length - 80} more</p>` : ""}`;
+  }
+
+  const footer = () =>
+    `<div class="foot">Generated by <code>docs/architecture/analyze.ts</code> from commit <code>${esc(M.generatedFrom || "?")}</code> with the TypeScript type checker. Dashed amber marks what was added by hand.</div>`;
+
+  function renderLegend() {
+    const sw = (c, extra = "") => `<i class="sw ${extra}" style="background:var(${c})"></i>`;
+    $("legend").innerHTML = [
+      `<span>${sw("--person")}Person</span>`, `<span>${sw("--accent")}System</span>`, `<span>${sw("--container")}Container</span>`,
+      `<span>${sw("--component")}Component</span>`, `<span>${sw("--external")}External</span>`, `<span><i class="sw manual"></i>Hand-added</span>`,
+      `<span><i class="sw line"></i>Uses / calls</span>`, `<span><i class="sw line wire"></i>Creates (wiring)</span>`, `<span><i class="sw line manual"></i>Hand-added</span>`,
+      ...(diffOn() ? [`<span><i class="sw add"></i>Added</span>`, `<span><i class="sw del"></i>Removed</span>`, `<span><i class="sw chg"></i>Changed</span>`] : []),
+    ].join("");
+  }
+
+  function highlight(ele) {
+    cy.elements().removeClass("faded");
+    if (!ele) return;
+    const keep = ele.isNode() ? ele.closedNeighborhood().union(ele.ancestors()) : ele.union(ele.connectedNodes());
+    cy.elements().not(keep).not(keep.ancestors()).addClass("faded");
+  }
+
+  function boot() {
+    cy = cytoscape({ container: $("cy"), style: style(), wheelSensitivity: 0.25, minZoom: 0.15, maxZoom: 3, boxSelectionEnabled: false });
+    cy.on("tap", "node", (ev) => {
+      const id = ev.target.id();
+      if (id.startsWith("boundary:")) return showNode(id.slice(9));
+      highlight(ev.target);
+      showNode(id);
+    });
+    cy.on("dbltap", "node", (ev) => {
+      const id = ev.target.id().replace(/^boundary:/, "");
+      const d = drillOf(id);
+      if (d && d !== current) render(d);
+    });
+    cy.on("tap", "edge", (ev) => { highlight(ev.target); showEdge(ev.target.data("idx")); });
+    cy.on("tap", (ev) => { if (ev.target === cy) { highlight(null); cy.elements().unselect(); showOverview(); } });
+    cy.on("mouseover", "node", (ev) => { if (!cy.$(":selected").length) highlight(ev.target); });
+    cy.on("mouseout", "node", () => { if (!cy.$(":selected").length) highlight(null); });
+
+    document.addEventListener("click", (ev) => {
+      const t = ev.target.closest("[data-view],[data-edge],[data-select]");
+      if (!t) return;
+      if (t.dataset.select) {
+        const n = cy.getElementById(t.dataset.select);
+        if (n.nonempty()) { cy.elements().unselect(); n.select(); highlight(n); showNode(n.id()); cy.animate({ center: { eles: n }, duration: 200 }); }
+        return;
+      }
+      if (t.dataset.view) render(t.dataset.view);
+      if (t.dataset.edge) { const e = cy.getElementById(t.dataset.edge); cy.elements().unselect(); e.select(); highlight(e); showEdge(e.data("idx")); cy.animate({ center: { eles: e }, duration: 200 }); }
+    });
+    document.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && ev.target.matches?.(".crumbs a")) ev.target.click(); });
+    $("fit").addEventListener("click", () => cy.animate({ fit: { padding: 56 }, duration: 200 }));
+    $("legend-toggle").addEventListener("click", () => {
+      const open = $("legend").classList.toggle("open");
+      $("legend-toggle").setAttribute("aria-expanded", String(open));
+    });
+    let resizeTimer;
+    window.addEventListener("resize", () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => { cy.resize(); cy.fit(undefined, 56); }, 150);
+    });
+    for (const id of ["opt-wiring", "opt-manual", "opt-diff"]) $(id).addEventListener("change", () => { renderLegend(); render(current, { keepHash: true }); });
+    $("opt-focus").addEventListener("change", applyFocus);
+    if (M.base) {
+      $("opt-diff").closest("label").hidden = false;
+      $("opt-focus").closest("label").hidden = false;
+      $("opt-diff-label").textContent = `Diff vs ${M.base.ref}`;
+    }
+    $("opt-labels").addEventListener("change", () => { $("opt-labels").dataset.user = "1"; cy.edges().toggleClass("labelled", $("opt-labels").checked); });
+
+    const restyle = () => cy.style(style());
+    try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", restyle); } catch {}
+    new MutationObserver(restyle).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    window.addEventListener("hashchange", () => { const v = viewOfToken.get(location.hash.slice(1)); if (v && v !== current) render(v, { keepHash: true }); });
+
+    $("commit").textContent = M.generatedFrom ? `@ ${M.generatedFrom}` : "";
+    renderLegend();
+    const fromHash = viewOfToken.get(location.hash.slice(1));
+    render(fromHash ?? ctxView.id, { keepHash: true });
+    document.fonts?.ready.then(() => { cy.style(style()); cy.layout(layoutFor(current)).run(); });
+  }
+
+  boot();
+})();
+</script>
