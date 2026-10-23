@@ -8,15 +8,19 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit -p .",
     "probe": "bun scripts/probe.ts",
-    "dev": "bun --watch apps/server/src/main.ts"
+    "dev": "bun --watch apps/server/src/main.ts",
+    "e2e": "bash e2e/run.sh"
   },
   "dependencies": {
+    "@kagi/auth-oidc": "workspace:*",
     "@kagi/core": "workspace:*",
     "@kagi/driver-sesame": "workspace:*",
-    "@kagi/driver-switchbot": "workspace:*"
+    "@kagi/driver-switchbot": "workspace:*",
+    "@kagi/server": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "1.4.4",
+    "playwright": "1.64.1",
     "typescript": "7.0.2"
   }
 }

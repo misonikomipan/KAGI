@@ -33,18 +33,22 @@ export function anyOf(...authorizers: Authorizer[]): Authorizer {
 }
 
 /**
- * Allow when the claim at `path` (dot-separated, e.g. "publicMetadata.doors") is a string array
- * containing the door id or "*".
+ * Allow when the claim at `path` (dot-separated, e.g. "groups" or "publicMetadata.doors") is a
+ * string array containing `${prefix}${door.id}` or `${prefix}*`.
+ *
+ *   claimAllowList("doors")                        // ["home", "office"]
+ *   claimAllowList("groups", { prefix: "door:" })  // ["staff", "door:office"]
  */
-export function claimAllowList(path: string): Authorizer {
+export function claimAllowList(path: string, opts: { prefix?: string } = {}): Authorizer {
   const keys = path.split(".");
+  const prefix = opts.prefix ?? "";
   return {
     async authorize({ principal, door }) {
       let value: unknown = principal.claims;
       for (const k of keys) {
         value = value !== null && typeof value === "object" ? (value as Record<string, unknown>)[k] : undefined;
       }
-      if (Array.isArray(value) && (value.includes(door.id) || value.includes("*"))) return ALLOW;
+      if (Array.isArray(value) && (value.includes(prefix + door.id) || value.includes(`${prefix}*`))) return ALLOW;
       return { allow: false, reason: `door not in claim ${path}` };
     },
   };

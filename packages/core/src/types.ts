@@ -78,9 +78,14 @@ export interface Principal {
  */
 export type AuthResult = { ok: true; principal: Principal } | { ok: false; response: Response };
 
-/** Identity integration for the HTTP adapter (Clerk by default). Framework-agnostic. */
+/** Identity integration for the HTTP adapter (OIDC by default). Framework-agnostic. */
 export interface Authenticator {
   authenticate(req: Request, opts: { returnTo: string }): Promise<AuthResult>;
+  /**
+   * Endpoints the integration owns under /auth/ (e.g. the OIDC callback, logout).
+   * Return null for paths it does not handle.
+   */
+  handle?(req: Request): Promise<Response | null>;
 }
 
 // ---- Presence (optional) ---------------------------------------------------

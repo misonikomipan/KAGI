@@ -131,13 +131,25 @@ bun run probe sesame history
 
 > 何度も続けて実行すると、HTTP 429 が返ることがあります（回数の上限は公開されていません）。1 回ごとに数秒空けてください。
 
-## 7. ブラウザで通しで試す（任意、Clerk を使う）
+## 7. ブラウザで通しで試す（任意、Pocket ID を使う）
 
-ターミナルで動いたら、本番と同じ「ページを開く → ログイン → ボタン」の流れを Mac のブラウザで試せます。
+ターミナルで動いたら、本番と同じ「ページを開く → ログイン → ボタン」の流れを Mac のブラウザで試せます。ログインには Pocket ID（OIDC）を使います。
 
-1. [Clerk](https://dashboard.clerk.com) でアプリケーションを作る（開発用のインスタンスで OK）。「API keys」の 2 つを `.env` の `CLERK_PUBLISHABLE_KEY` と `CLERK_SECRET_KEY` に入れる
-2. Clerk のダッシュボードで、自分のユーザーを開き、**Public metadata** に `{"doors": ["home"]}` を入れて保存する
-3. `.env` の `KAGI_DOORS` に、SESAME の UUID と秘密鍵を入れる（`.env.example` の形のまま）
+1. Pocket ID の管理画面で、**OIDC クライアント**を追加する
+   - 名前: `KAGI`
+   - Callback URL: `http://localhost:8080/auth/callback`
+   - **Public client** を有効にし、**PKCE** を有効にする（クライアントシークレットは不要）
+2. Pocket ID で、`door:home` という名前の**グループ**を作り、自分を入れる。KAGI のクライアントがグループの情報を受け取れる設定になっているかも確かめる
+3. `.env` を埋める
+   ```sh
+   KAGI_AUTH=oidc
+   OIDC_ISSUER=https://<Pocket ID のドメイン>
+   OIDC_CLIENT_ID=<1 で表示された Client ID>
+   OIDC_SCOPES=openid profile email groups
+   KAGI_SESSION_SECRET=<下のコマンドの出力>
+   KAGI_DOORS='[{"id":"home","name":"自宅","driver":"sesame","device":{"uuid":"<UUID>","secretKey":"<秘密鍵>"}}]'
+   ```
+   `KAGI_SESSION_SECRET` は `bun -e 'console.log(crypto.randomUUID()+crypto.randomUUID())'` で作れます
 4. サーバを起動して、ブラウザで開く
    ```sh
    bun run dev
@@ -146,14 +158,18 @@ bun run probe sesame history
 
 | 確かめること | 期待する結果 |
 | --- | --- |
-| ページを開く | Clerk のログイン画面に移り、ログインすると「Home」と「開ける」ボタンのページに戻ってくる |
+| ページを開く | Pocket ID のログイン画面（パスキー）に移り、ログインすると「自宅」と「開ける」ボタンのページに戻ってくる |
 | ページを開いただけ | **鍵は動かない**（GET では開けない） |
 | 「開ける」を押す | 鍵が開き、「開きました」と出る。ターミナルに `unlock.succeeded` の JSON が 1 行出る |
 | 5 秒以内にもう一度押す | 「押したばかりです」と出て、鍵は動かない |
-| Public metadata から `home` を消して押す | 「このドアを開ける権限がありません」と出て、鍵は動かない |
+| `door:home` から自分を外し、`/auth/logout` を開いてから、もう一度ログインして押す | 「このドアを開ける権限がありません」と出て、鍵は動かない |
 | `/d/xxx`（存在しないドア）を開く | 「そのドアは見つかりません」と出る |
 
-スマホから試すには、Mac の外から届く URL が必要です（`cloudflared tunnel` や `ngrok` など）。その場合は `KAGI_PUBLIC_ORIGIN` を、その URL に変えてください。
+> グループから外しても、**KAGI のログイン（既定で 12 時間）が切れるまでは前の権限のまま**です。DB を持たない代わりの仕様です。すぐに効かせたいときは、`/auth/logout` を開くか、`KAGI_SESSION_SECRET` を変えて全員をログアウトさせます。
+
+Clerk で試す場合は、`KAGI_AUTH=clerk` にして、`CLERK_PUBLISHABLE_KEY` と `CLERK_SECRET_KEY` を入れます。権限は、Clerk のユーザーの Public metadata に `{"doors": ["home"]}` を入れて付けます。
+
+スマホから試すには、Mac の外から届く URL が必要です（`cloudflared tunnel` や `ngrok` など）。その場合は、`KAGI_PUBLIC_ORIGIN` と Pocket ID の Callback URL を、その URL に変えてください。
 
 ## 8. 終わったら
 

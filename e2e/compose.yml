@@ -1,0 +1,17 @@
+# A throwaway Pocket ID (the released image, not a test build) for end-to-end tests.
+# Admin API via STATIC_API_KEY; sign-in via one-time access tokens, so no passkey is needed.
+name: kagi-e2e
+services:
+  pocket-id:
+    image: ghcr.io/pocket-id/pocket-id:v2.19.1
+    ports:
+      - "1411:1411"
+    environment:
+      APP_URL: http://localhost:1411
+      # Test-only values. Never reuse them anywhere real.
+      ENCRYPTION_KEY: a2FnaS1lMmUtZW5jcnlwdGlvbi1rZXktMzJieXRlcyE=
+      STATIC_API_KEY: kagi-e2e-static-api-key
+      ALLOW_INSECURE_CALLBACK_URLS: "true"
+      ANALYTICS_DISABLED: "true"
+    tmpfs:
+      - /app/data

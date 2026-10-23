@@ -5,12 +5,15 @@
     "": {
       "name": "kagi",
       "dependencies": {
+        "@kagi/auth-oidc": "workspace:*",
         "@kagi/core": "workspace:*",
         "@kagi/driver-sesame": "workspace:*",
         "@kagi/driver-switchbot": "workspace:*",
+        "@kagi/server": "workspace:*",
       },
       "devDependencies": {
         "@types/bun": "1.4.4",
+        "playwright": "1.64.1",
         "typescript": "7.0.2",
       },
     },
@@ -19,6 +22,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@kagi/auth-clerk": "workspace:*",
+        "@kagi/auth-oidc": "workspace:*",
         "@kagi/core": "workspace:*",
         "@kagi/driver-sesame": "workspace:*",
         "@kagi/driver-switchbot": "workspace:*",
@@ -31,6 +35,15 @@
       "dependencies": {
         "@clerk/backend": "3.26.1",
         "@kagi/core": "workspace:*",
+      },
+    },
+    "packages/auth-oidc": {
+      "name": "@kagi/auth-oidc",
+      "version": "0.0.0",
+      "dependencies": {
+        "@kagi/core": "workspace:*",
+        "jose": "6.2.13",
+        "openid-client": "6.8.8",
       },
     },
     "packages/core": {
@@ -68,6 +81,8 @@
     "@kagi/app-server": ["@kagi/app-server@workspace:apps/server"],
 
     "@kagi/auth-clerk": ["@kagi/auth-clerk@workspace:packages/auth-clerk"],
+
+    "@kagi/auth-oidc": ["@kagi/auth-oidc@workspace:packages/auth-oidc"],
 
     "@kagi/core": ["@kagi/core@workspace:packages/core"],
 
@@ -135,7 +150,17 @@
 
     "hono": ["hono@4.13.13", "", {}, "sha512-CQ46U0ZkAGmbT/4UxdzzGJpacP2IeKgY4a5/tOI9AABbpOMfK739wfDXmv1usCk+3RkKj1hQy4/fjhiwa2xlrA=="],
 
+    "jose": ["jose@6.2.13", "", {}, "sha512-7TIg10ZE1x82YediN+lcrPNvGMKge9yFHQD+Qho/b8y2adfugU3AsvvHfxV0fzyFllT6l9xCjf4RWY9g/Z9PJQ=="],
+
     "js-cookie": ["js-cookie@3.0.8", "", {}, "sha512-yeJd4aNAdYZQjaon2bpD/Gb0B/omw7HQOsynXXcOiWVCacbBcPlgn8S/d1X6blFSaHao7ozqtW7NZW19xpCtIw=="],
+
+    "oauth4webapi": ["oauth4webapi@3.8.8", "", {}, "sha512-8N28E+a/oxfXWBgOMt+ZP/JUf/XR+IFbvkAEPP3gznXOMv9BpAAwiIj0TFNz3tGTPc0ZQ8zmWBNgN1nAys0gng=="],
+
+    "openid-client": ["openid-client@6.8.8", "", { "dependencies": { "jose": "^6.2.12", "oauth4webapi": "^3.8.8" } }, "sha512-ZsucJA5Ad04Uv7YN4ql+s4GXNmb9uAYQwyJTsJx7CH/MX3JZioLE2pVKi1SC+YrbSLA4Px3Gi30dMjgOZtb6pA=="],
+
+    "playwright": ["playwright@1.64.1", "", { "dependencies": { "playwright-core": "1.64.1" }, "bin": { "playwright": "cli.js" } }, "sha512-HCrVhHr5QQuwYoswEUGTb7gGp522yflbv/ST8nF4sFWGuLjQCt17Q/EubpGGSNKYn1tsTCPZxqHhHCfVURu7UA=="],
+
+    "playwright-core": ["playwright-core@1.64.1", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-BC4s8y6SEVA6Q1rSxZTto8hI1KUI3xXlHGZgvGqP4IqPdI/a6FX9H29IDNz7vKo9l21b6LfYosScPL6M3xxyDQ=="],
 
     "standardwebhooks": ["standardwebhooks@1.1.1", "", { "dependencies": { "@stablelib/base64": "^1.0.0", "fast-sha256": "^1.3.0" } }, "sha512-bCbX9ZEyFkWPsRz7Bl3NuQUJohmwGSev/yhr7vhaGPlc4AfIrspIRa6cPTBuI1ItmrTDJ4d/S2hCsfe4+vQGnQ=="],
 

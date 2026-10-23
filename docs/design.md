@@ -9,7 +9,7 @@ NFC tag at the door ── https://<host>/d/office
         │
         ▼
  ┌──────────── HTTP adapter (thin: one page + one POST) ─────────────┐
- │  Authenticator ── who is this?            (Clerk by default)       │
+ │  Authenticator ── who is this?            (any OIDC provider)      │
  │  PresenceVerifier ── tapped right here?   (optional: NTAG 424 SUN) │
  └──────────────────────────────┬────────────────────────────────────┘
                                 ▼
@@ -36,10 +36,10 @@ NFC tag at the door ── https://<host>/d/office
 
 | Layer | Choice | Why / rejected alternatives |
 | --- | --- | --- |
-| Language | TypeScript (strict) | Every SDK involved (Clerk, Hono) is TS-first. |
+| Language | TypeScript (strict) | Every library involved (Hono, openid-client, jose) is TS-first. |
 | Runtime & tooling | Bun (workspaces, `bun test`) | One tool for install/test/run, runs TS without a build step, fast cold start. Node 24 would also work; nothing in the core is Bun-specific (only `node:crypto` and Web APIs). |
 | HTTP | Hono + `hono/jsx` (server-rendered, no client JS) | Two pages and one POST don't need React or a bundler; Next.js was rejected as too heavy for that. `hono/csrf` covers the Origin check. |
-| Identity | Clerk via `@clerk/hono` | Official SDK; it handles Clerk's handshake redirect. (`@hono/clerk-auth` is deprecated in its favour.) Sign-in uses Clerk's hosted Account Portal, so KAGI ships no sign-in UI. |
+| Identity | **OpenID Connect** via `openid-client` + `jose` (default); Clerk as an optional adapter | Not tied to one vendor: Pocket ID, Google, Entra ID, Okta, Keycloak and Clerk (as an OIDC provider) all speak OIDC. Both libraries are by the same author, widely used and dependency-free. Other apps call the API with a bearer JWT verified against the issuer's JWKS, so no vendor SDK there either. |
 | Lock vendors | Hand-written `fetch` clients | SwitchBot needs HMAC-SHA256, SESAME needs AES-CMAC; both fit in `node:crypto`. No vendor SDKs, so the dependency tree of a door-opening service stays small and auditable. |
 | Lint / format | Biome | One fast tool instead of ESLint + Prettier. |
 | Hosting | Cloud Run (`asia-northeast1`) | Container, scale to zero, secrets from Secret Manager, stdout JSON lands in Cloud Logging as structured audit logs. |
@@ -50,8 +50,8 @@ Cloud Run settings that follow from the design:
 - **`max-instances=1`.** The cooldown lives in memory; one instance keeps it consistent without a
   database. Traffic is a handful of requests a day.
 - **`min-instances`:** start at 0 and measure the cold start at the door; set 1 if it hurts.
-- **Custom domain is required.** Clerk production instances need a domain you own, and the URL
-  written to NFC tags must never change. Use Cloud Run domain mapping or a load balancer.
+- **Custom domain is required.** The URL written to NFC tags must never change, and the OIDC
+  redirect URI is registered against it. Use Cloud Run domain mapping or a load balancer.
 
 ## Packages (Bun workspaces)
 
@@ -60,7 +60,8 @@ Cloud Run settings that follow from the design:
 | `@kagi/core` | Types below, `createGate()`, built-in authorizers, stdout audit sink |
 | `@kagi/driver-switchbot` | SwitchBot OpenAPI v1.1 (Lock / Lock Pro / Lock Ultra via Hub) |
 | `@kagi/driver-sesame` | SESAME Web API (SESAME 5 etc. via Hub3 / Wi-Fi module) |
-| `@kagi/auth-clerk` | `Authenticator` backed by Clerk (`@clerk/backend`; Account Portal for sign-in) |
+| `@kagi/auth-oidc` | `oidcAuthenticator` (browser sign-in, own encrypted session cookie) and `jwtBearerAuthenticator` (API) |
+| `@kagi/auth-clerk` | Optional `Authenticator` on the Clerk SDK (Account Portal sign-in, instant session revocation) |
 | `@kagi/server` | `createKagiApp()`: the Hono app (door page + unlock route), no config loading |
 | `apps/server` | Deployable entrypoint: config from env, Dockerfile for Cloud Run |
 
@@ -128,7 +129,7 @@ Drivers do **not** retry, poll or verify; the core does (one place to tune timeo
 interface Principal {
   id: string;                               // stable id from the identity provider
   displayName: string;
-  /** Provider-specific claims used by authorizers (e.g. Clerk publicMetadata, org roles). */
+  /** Provider claims used by authorizers (e.g. OIDC "groups", Clerk publicMetadata). */
   claims: Record<string, unknown>;
 }
 
@@ -138,17 +139,41 @@ interface Principal {
  */
 type AuthResult = { ok: true; principal: Principal } | { ok: false; response: Response };
 
-/** Identity integration for the HTTP adapter (Clerk by default). Framework-agnostic. */
+/** Identity integration for the HTTP adapter (OIDC by default). Framework-agnostic. */
 interface Authenticator {
   authenticate(req: Request, opts: { returnTo: string }): Promise<AuthResult>;
+  /** Endpoints it owns under /auth/ (OIDC callback, logout); null for anything else. */
+  handle?(req: Request): Promise<Response | null>;
 }
 ```
 
-The draft had `authenticate(): Principal | null` plus `signInUrl()`. That cannot express Clerk's
-handshake (a redirect round-trip that refreshes the session cookie), and Clerk's sign-in URL for
-development instances depends on the request. Returning a `Response` covers both. The HTTP adapter
-follows it on GET, and on POST redirects back to the door page instead (303), so a POST is never
-replayed through a redirect chain.
+The draft had `authenticate(): Principal | null` plus `signInUrl()`. That cannot express a
+provider round-trip (OIDC's authorize → callback, Clerk's handshake). Returning a `Response` covers
+both. The HTTP adapter follows it on GET, and on POST redirects back to the door page instead
+(303), so a POST is never replayed through a redirect chain.
+
+#### OIDC (`@kagi/auth-oidc`, the default)
+
+- **Browser sign-in:** authorization code + PKCE, with `state` and `nonce`. The pending login
+  (state, nonce, verifier, return URL) rides in a short-lived encrypted cookie, so no server state.
+  Redirect URI: `<origin>/auth/callback`. `returnTo` must be same-origin (no open redirect).
+- **Session:** after the callback KAGI sets its own cookie: a JWE (`dir` + `A256GCM`) holding
+  `sub`, a display name and the person's claims (ID token + userinfo, minus protocol claims).
+  `__Host-` prefixed, `HttpOnly`, `SameSite=Lax`. Lifetime `KAGI_SESSION_TTL_SECONDS` (12 h).
+- **Trade-off — no per-session revocation.** Without a database a session lives until it
+  expires. Removing someone at the provider takes effect at their next sign-in (≤ TTL);
+  rotating `KAGI_SESSION_SECRET` signs everyone out immediately. Clerk's adapter revokes
+  instantly but ties KAGI to Clerk; that is why it remains an option, not the default.
+- **Authorization:** `claimAllowList("groups", { prefix: "door:" })` by default, i.e. a provider
+  group named `door:home` opens door `home`, `door:*` opens all.
+
+#### API for other apps
+
+`POST /api/doors/:doorId/unlock` exists only when an API authenticator is configured.
+`jwtBearerAuthenticator` verifies `Authorization: Bearer <JWT>` against the issuer's JWKS
+(`iss`, optional `aud`, optional allowed `azp`). Typical use: HCM's server forwards the signed-in
+user's Clerk session token; KAGI needs no Clerk SDK for that. The same Gate runs, so the
+authorizer, cooldown and audit trail are shared with the door page. Lock credentials stay in KAGI.
 
 ### Presence (optional)
 
@@ -241,6 +266,8 @@ verify (if `capabilities.readState`: poll `getState` until `unlocked`, or `jamme
 | --- | --- |
 | `GET /d/:doorId` | Unknown door → 404. Not signed in → follow the authenticator's response (sign-in, handshake). Otherwise a page with the door name and one **Unlock** button. (Presence verification: not implemented yet.) |
 | `GET /healthz` | `ok`, for Cloud Run probes. |
+| `* /auth/*` | Delegated to `Authenticator.handle` (OIDC callback, logout). |
+| `POST /api/doors/:doorId/unlock` | Only when an API authenticator is configured. Bearer JWT → `gate.unlock()` → JSON `UnlockOutcome`. |
 | `POST /d/:doorId/unlock` | Same-origin check (`hono/csrf`) → authenticate (not signed in → 303 to the door page) → `gate.unlock()` → result page (unlocked / denied / failed / try again). |
 
 Nothing else. No admin UI: doors are config, people are managed in the identity provider.

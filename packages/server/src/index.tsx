@@ -2,9 +2,10 @@ import type { Authenticator, Gate, UnlockOutcome } from "@kagi/core";
 import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { csrf } from "hono/csrf";
+import { HTTPException } from "hono/http-exception";
 import { secureHeaders } from "hono/secure-headers";
 import { en, type Messages } from "./messages.ts";
-import { DoorPage, NotFoundPage, ResultPage } from "./pages.tsx";
+import { DoorPage, MessagePage, NotFoundPage, ResultPage } from "./pages.tsx";
 
 export { en, ja, type Messages } from "./messages.ts";
 
@@ -17,13 +18,20 @@ export interface KagiAppOptions {
    */
   publicOrigin: string;
   messages?: Messages;
+  /**
+   * Authenticator for POST /api/doors/:doorId/unlock (other apps calling on behalf of a user,
+   * e.g. with a bearer JWT). The route does not exist unless this is set.
+   */
+  api?: Authenticator;
 }
 
 /**
  * The whole web surface: one page with a button, one POST that unlocks. Nothing else.
  *
- *   GET  /d/:doorId          sign in if needed, then show the Unlock button (never unlocks)
- *   POST /d/:doorId/unlock   same-origin only; unlock and show the result
+ *   GET  /d/:doorId                 sign in if needed, then show the Unlock button (never unlocks)
+ *   POST /d/:doorId/unlock          same-origin only; unlock and show the result
+ *   *    /auth/*                    owned by the authenticator (OIDC callback, logout)
+ *   POST /api/doors/:doorId/unlock  JSON, for other apps; only when `api` is set
  */
 export function createKagiApp(opts: KagiAppOptions): Hono {
   const m = opts.messages ?? en;
@@ -35,7 +43,8 @@ export function createKagiApp(opts: KagiAppOptions): Hono {
     await next();
     c.header("cache-control", "no-store");
   });
-  app.use(csrf({ origin }));
+  // Bearer-token API calls are not exposed to CSRF (browsers never attach the header on their own).
+  app.use("/d/*", csrf({ origin }));
 
   app.get("/healthz", (c) => c.text("ok"));
 
@@ -79,7 +88,29 @@ export function createKagiApp(opts: KagiAppOptions): Hono {
     );
   });
 
+  app.all("/auth/*", async (c) => {
+    const res = await opts.authenticator.handle?.(publicRequest(c.req.raw));
+    return res ?? c.html(<NotFoundPage m={m} />, 404);
+  });
+
+  const api = opts.api;
+  if (api) {
+    app.post("/api/doors/:doorId/unlock", async (c) => {
+      const auth = await api.authenticate(publicRequest(c.req.raw), { returnTo: "" });
+      if (!auth.ok) return auth.response;
+      const outcome = await opts.gate.unlock({ principal: auth.principal, doorId: c.req.param("doorId") });
+      return c.json(outcome, describe(outcome, m).status);
+    });
+  }
+
   app.notFound((c) => c.html(<NotFoundPage m={m} />, 404));
+  // e.g. the identity provider is unreachable. One log line, no stack trace to the browser.
+  app.onError((err, c) => {
+    if (err instanceof HTTPException) return err.getResponse(); // e.g. the CSRF check's 403
+    const cause = err.cause instanceof Error ? err.cause.message : undefined;
+    console.error(JSON.stringify({ msg: "kagi: request failed", path: c.req.path, error: err.message, ...(cause && { cause }) }));
+    return c.html(<MessagePage m={m} message={m.unavailable} />, 503);
+  });
   return app;
 }
 

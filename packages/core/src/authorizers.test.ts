@@ -14,6 +14,11 @@ test("claimAllowList", async () => {
   expect(await a.authorize(input({ publicMetadata: { doors: ["*"] } }))).toEqual({ allow: true });
   expect((await a.authorize(input({ publicMetadata: { doors: ["home"] } }))).allow).toBe(false);
   expect((await a.authorize(input({}))).allow).toBe(false);
+
+  const groups = claimAllowList("groups", { prefix: "door:" });
+  expect(await groups.authorize(input({ groups: ["staff", "door:office"] }))).toEqual({ allow: true });
+  expect(await groups.authorize(input({ groups: ["door:*"] }))).toEqual({ allow: true });
+  expect((await groups.authorize(input({ groups: ["office"] }))).allow).toBe(false);
 });
 
 test("timeWindow in Asia/Tokyo, including overnight windows", async () => {

@@ -1,4 +1,3 @@
-import { clerkAuthenticator } from "@kagi/auth-clerk";
 import { createGate } from "@kagi/core";
 import { createKagiApp } from "@kagi/server";
 import { loadConfig } from "./config.ts";
@@ -10,11 +9,14 @@ const gate = createGate({ doors: config.doors, drivers: config.drivers, authoriz
 
 const app = createKagiApp({
   gate,
-  authenticator: clerkAuthenticator({ ...config.clerk, authorizedParties: [config.publicOrigin] }),
+  authenticator: config.authenticator,
+  ...(config.api && { api: config.api }),
   publicOrigin: config.publicOrigin,
   messages: config.messages,
 });
 
 // Explicit Bun.serve (not `export default`) so the --compile'd binary serves too.
 Bun.serve({ port: config.port, fetch: app.fetch });
-console.log(JSON.stringify({ msg: "kagi listening", port: config.port, doors: config.doors.map((d) => d.id) }));
+console.log(
+  JSON.stringify({ msg: "kagi listening", port: config.port, doors: config.doors.map((d) => d.id), api: Boolean(config.api) }),
+);

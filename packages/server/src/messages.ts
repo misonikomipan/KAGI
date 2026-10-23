@@ -11,6 +11,7 @@ export interface Messages {
   retry: string;
   cooldown: (seconds: number) => string;
   notFound: string;
+  unavailable: string;
   back: string;
 }
 
@@ -33,6 +34,7 @@ export const en: Messages = {
   retry: "Try again",
   cooldown: (s) => `Just pressed. Try again in ${s} s.`,
   notFound: "Unknown door.",
+  unavailable: "KAGI is temporarily unavailable. Try again in a moment.",
   back: "Back",
 };
 
@@ -55,5 +57,6 @@ export const ja: Messages = {
   retry: "もう一度",
   cooldown: (s) => `押したばかりです。${s} 秒後にもう一度どうぞ。`,
   notFound: "そのドアは見つかりません。",
+  unavailable: "一時的に使えません。少し待ってからもう一度どうぞ。",
   back: "戻る",
 };

@@ -15,5 +15,5 @@
     "jsx": "react-jsx",
     "jsxImportSource": "hono/jsx"
   },
-  "include": ["packages/*/src", "apps/*/src", "scripts"]
+  "include": ["packages/*/src", "apps/*/src", "scripts", "e2e"]
 }

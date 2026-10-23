@@ -74,9 +74,13 @@ export function ResultPage(props: {
 }
 
 export function NotFoundPage(props: { m: Messages }) {
+  return <MessagePage m={props.m} message={props.m.notFound} />;
+}
+
+export function MessagePage(props: { m: Messages; message: string }) {
   return (
     <Layout m={props.m} title="KAGI">
-      <p class="status bad">{props.m.notFound}</p>
+      <p class="status bad">{props.message}</p>
     </Layout>
   );
 }
