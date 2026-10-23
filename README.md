@@ -9,7 +9,8 @@ Tap an NFC tag at the door, sign in, press **Unlock**, and the smart lock opens.
 
 See [docs/design.md](docs/design.md) for the interfaces and the reasoning behind them.
 
-> **Status:** early development. The core and both drivers are implemented and unit-tested; the web app (Hono + Clerk on Cloud Run) is next.
+> **Status:** early development. Everything below is implemented and unit-tested, but has not yet
+> been verified against real locks or a real Clerk instance.
 
 ## Packages
 
@@ -18,6 +19,23 @@ See [docs/design.md](docs/design.md) for the interfaces and the reasoning behind
 | `@kagi/core` | Types, `createGate()`, built-in authorizers, stdout audit sink |
 | `@kagi/driver-switchbot` | SwitchBot OpenAPI v1.1 |
 | `@kagi/driver-sesame` | SESAME Web API |
+| `@kagi/auth-clerk` | Clerk sign-in (hosted Account Portal; KAGI ships no sign-in UI) |
+| `@kagi/server` | The Hono app: door page + unlock route |
+| `apps/server` | Entrypoint with config from env, and the Dockerfile for Cloud Run |
+
+## Run the server locally
+
+1. Create a Clerk application and copy its keys into `.env` (see `.env.example`).
+2. In the Clerk dashboard, give your user public metadata `{"doors": ["home"]}`.
+3. Set `KAGI_DOORS` in `.env`, then:
+
+```sh
+bun run dev
+open http://localhost:8080/d/home
+```
+
+Configuration is environment variables only; `.env.example` lists them all. Build the container with
+`docker build -t kagi .` (a single compiled binary on distroless).
 
 ## Try a lock from the terminal
 

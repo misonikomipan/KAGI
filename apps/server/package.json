@@ -1,0 +1,18 @@
+{
+  "name": "@kagi/app-server",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts"
+  },
+  "dependencies": {
+    "@kagi/auth-clerk": "workspace:*",
+    "@kagi/core": "workspace:*",
+    "@kagi/driver-sesame": "workspace:*",
+    "@kagi/driver-switchbot": "workspace:*",
+    "@kagi/server": "workspace:*"
+  }
+}

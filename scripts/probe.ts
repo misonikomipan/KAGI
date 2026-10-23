@@ -1,12 +1,12 @@
 // Drive a real lock from the terminal, through the same Gate the web app uses.
 //
-//   bun run probe sesame state|unlock|lock
+//   bun run probe sesame state|unlock|lock|history
 //   bun run probe switchbot devices|state|unlock|lock
 //
 // Credentials come from env (Bun loads .env automatically); see .env.example.
 
 import { createGate, type CommandContext, type LockDriver } from "@kagi/core";
-import { sesameDriver } from "@kagi/driver-sesame";
+import { fetchHistory, sesameDriver } from "@kagi/driver-sesame";
 import { SwitchBotClient, switchbotDriver } from "@kagi/driver-switchbot";
 
 const [vendor, action] = process.argv.slice(2);
@@ -23,6 +23,10 @@ function env(name: string): string {
 let driver: LockDriver;
 let device: unknown;
 if (vendor === "sesame") {
+  if (action === "history") {
+    console.table(await fetchHistory({ apiKey: env("SESAME_API_KEY") }, env("SESAME_UUID")));
+    process.exit(0);
+  }
   driver = sesameDriver({ apiKey: env("SESAME_API_KEY") }) as LockDriver;
   device = { uuid: env("SESAME_UUID"), secretKey: env("SESAME_SECRET_KEY") };
 } else if (vendor === "switchbot") {
@@ -35,7 +39,7 @@ if (vendor === "sesame") {
   driver = switchbotDriver(creds) as LockDriver;
   device = { deviceId: env("SWITCHBOT_DEVICE_ID") };
 } else {
-  console.error("usage: bun run probe <sesame|switchbot> <state|unlock|lock|devices>");
+  console.error("usage: bun run probe <sesame|switchbot> <state|unlock|lock|history|devices>");
   process.exit(2);
 }
 
@@ -64,6 +68,6 @@ switch (action) {
     break;
   }
   default:
-    console.error("usage: bun run probe <sesame|switchbot> <state|unlock|lock|devices>");
+    console.error("usage: bun run probe <sesame|switchbot> <state|unlock|lock|history|devices>");
     process.exit(2);
 }

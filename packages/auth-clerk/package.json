@@ -1,0 +1,14 @@
+{
+  "name": "@kagi/auth-clerk",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@clerk/backend": "3.26.1",
+    "@kagi/core": "workspace:*"
+  }
+}

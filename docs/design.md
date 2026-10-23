@@ -60,8 +60,9 @@ Cloud Run settings that follow from the design:
 | `@kagi/core` | Types below, `createGate()`, built-in authorizers, stdout audit sink |
 | `@kagi/driver-switchbot` | SwitchBot OpenAPI v1.1 (Lock / Lock Pro / Lock Ultra via Hub) |
 | `@kagi/driver-sesame` | SESAME Web API (SESAME 5 etc. via Hub3 / Wi-Fi module) |
-| `@kagi/auth-clerk` | `Authenticator` backed by Clerk |
-| `apps/server` | Reference Hono app: `/d/:doorId` page + unlock route, Dockerfile for Cloud Run |
+| `@kagi/auth-clerk` | `Authenticator` backed by Clerk (`@clerk/backend`; Account Portal for sign-in) |
+| `@kagi/server` | `createKagiApp()`: the Hono app (door page + unlock route), no config loading |
+| `apps/server` | Deployable entrypoint: config from env, Dockerfile for Cloud Run |
 
 ## Core types
 
@@ -131,14 +132,23 @@ interface Principal {
   claims: Record<string, unknown>;
 }
 
-/** Implemented by the HTTP adapter's identity integration (Clerk by default). */
-interface Authenticator<Req = Request> {
-  /** null = not signed in. */
-  authenticate(req: Req): Promise<Principal | null>;
-  /** Where to send an unauthenticated user; must return to `returnTo` afterwards. */
-  signInUrl(returnTo: string): string;
+/**
+ * Either a signed-in principal, or a response the browser must follow first: a sign-in page
+ * that returns to `returnTo`, or a provider round-trip such as Clerk's session handshake.
+ */
+type AuthResult = { ok: true; principal: Principal } | { ok: false; response: Response };
+
+/** Identity integration for the HTTP adapter (Clerk by default). Framework-agnostic. */
+interface Authenticator {
+  authenticate(req: Request, opts: { returnTo: string }): Promise<AuthResult>;
 }
 ```
+
+The draft had `authenticate(): Principal | null` plus `signInUrl()`. That cannot express Clerk's
+handshake (a redirect round-trip that refreshes the session cookie), and Clerk's sign-in URL for
+development instances depends on the request. Returning a `Response` covers both. The HTTP adapter
+follows it on GET, and on POST redirects back to the door page instead (303), so a POST is never
+replayed through a redirect chain.
 
 ### Presence (optional)
 
@@ -229,8 +239,9 @@ verify (if `capabilities.readState`: poll `getState` until `unlocked`, or `jamme
 
 | Route | Behaviour |
 | --- | --- |
-| `GET /d/:doorId` | Not signed in → `signInUrl(returnTo)`. Unknown door → 404. Otherwise a page with the door name and one **Unlock** button. Presence is verified here and carried to the POST. |
-| `POST /d/:doorId/unlock` | Same-origin check (Origin header) → authenticate → `gate.unlock()` → result page (unlocked / denied / failed / try again). |
+| `GET /d/:doorId` | Unknown door → 404. Not signed in → follow the authenticator's response (sign-in, handshake). Otherwise a page with the door name and one **Unlock** button. (Presence verification: not implemented yet.) |
+| `GET /healthz` | `ok`, for Cloud Run probes. |
+| `POST /d/:doorId/unlock` | Same-origin check (`hono/csrf`) → authenticate (not signed in → 303 to the door page) → `gate.unlock()` → result page (unlocked / denied / failed / try again). |
 
 Nothing else. No admin UI: doors are config, people are managed in the identity provider.
 

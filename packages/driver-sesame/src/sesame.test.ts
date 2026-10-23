@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { CommandContext } from "@kagi/core";
 import { aesCmac } from "./cmac.ts";
-import { normalizeLockState, sesameDriver, sign } from "./index.ts";
+import { historyTag, normalizeLockState, sesameDriver, sign } from "./index.ts";
 
 describe("aesCmac (RFC 4493 vectors)", () => {
   const key = Buffer.from("2b7e151628aed2a6abf7158809cf4f3c", "hex");
@@ -25,6 +25,13 @@ test("sign uses bytes 1..3 of the little-endian timestamp", () => {
   const expected = aesCmac(Buffer.from(key, "hex"), Buffer.from([0x21, 0x43, 0x65])).toString("hex");
   expect(sign(key, t)).toBe(expected);
   expect(sign(key, t + 0xff)).toBe(expected); // the low byte is not signed
+});
+
+test("historyTag truncates to 21 bytes on a character boundary", () => {
+  const decode = (s: string) => Buffer.from(s, "base64").toString("utf8");
+  expect(decode(historyTag("Alice"))).toBe("Alice");
+  expect(decode(historyTag("あいうえおかきくけこ"))).toBe("あいうえおかき"); // 7 × 3 bytes
+  expect(Buffer.from(historyTag("x".repeat(40)), "base64").length).toBe(21);
 });
 
 test("normalizeLockState", () => {

@@ -3,11 +3,12 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "workspaces": ["packages/*"],
+  "workspaces": ["packages/*", "apps/*"],
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit -p .",
-    "probe": "bun scripts/probe.ts"
+    "probe": "bun scripts/probe.ts",
+    "dev": "bun --watch apps/server/src/main.ts"
   },
   "dependencies": {
     "@kagi/core": "workspace:*",

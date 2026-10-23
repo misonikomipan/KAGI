@@ -72,12 +72,15 @@ export interface Principal {
   claims: Record<string, unknown>;
 }
 
-/** Implemented by the HTTP adapter's identity integration (Clerk by default). */
-export interface Authenticator<Req = Request> {
-  /** null = not signed in. */
-  authenticate(req: Req): Promise<Principal | null>;
-  /** Where to send an unauthenticated user; must return to `returnTo` afterwards. */
-  signInUrl(returnTo: string): string;
+/**
+ * Either a signed-in principal, or a response the browser must follow first: a sign-in page
+ * that returns to `returnTo`, or a provider round-trip such as Clerk's session handshake.
+ */
+export type AuthResult = { ok: true; principal: Principal } | { ok: false; response: Response };
+
+/** Identity integration for the HTTP adapter (Clerk by default). Framework-agnostic. */
+export interface Authenticator {
+  authenticate(req: Request, opts: { returnTo: string }): Promise<AuthResult>;
 }
 
 // ---- Presence (optional) ---------------------------------------------------

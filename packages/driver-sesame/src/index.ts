@@ -37,7 +37,7 @@ export function sesameDriver(opts: SesameOptions): LockDriver<SesameDevice> {
         headers: { "x-api-key": opts.apiKey, "content-type": "application/json" },
         body: JSON.stringify({
           cmd: CMD[cmd],
-          history: Buffer.from(label(ctx), "utf8").toString("base64"),
+          history: historyTag(label(ctx)),
           sign: sign(device.secretKey, nowSeconds()),
         }),
         signal: ctx.signal,
@@ -82,13 +82,51 @@ export function sesameDriver(opts: SesameOptions): LockDriver<SesameDevice> {
 /**
  * sign = hex(AES-CMAC(secretKey, ts[1..4])) where ts is the Unix time in seconds as a
  * little-endian uint32. The official docs word this as "remove the most-significant byte", but
- * the published Python/PHP clients drop byte 0 of the LE buffer (the least-significant byte);
- * we follow the clients. Verify against a real device before trusting this comment.
+ * their own sample code drops byte 0 of the LE buffer (`slice(1, 4)`); so do we.
  */
 export function sign(secretKeyHex: string, unixSeconds: number): string {
   const ts = Buffer.alloc(4);
   ts.writeUInt32LE(unixSeconds >>> 0);
   return aesCmac(Buffer.from(secretKeyHex, "hex"), ts.subarray(1, 4)).toString("hex");
+}
+
+/** The history tag holds at most 21 bytes; truncate on a character boundary, then base64. */
+export function historyTag(label: string): string {
+  let out = "";
+  for (const ch of label) {
+    if (Buffer.byteLength(out + ch, "utf8") > 21) break;
+    out += ch;
+  }
+  return Buffer.from(out, "utf8").toString("base64");
+}
+
+export interface SesameHistoryEntry {
+  /** 2 bleUnLock, 8 manualUnlocked, 11 driveUnlocked, 12 driveFailed, 15 wm2Unlock, 17 webUnlock, … */
+  type: number;
+  timeStamp: number;
+  /** Decoded historyTag (the label sent with the command), if any. */
+  tag: string | null;
+  recordID: number;
+}
+
+/** Latest history entries, newest first. Not part of LockDriver; used by `bun run probe`. */
+export async function fetchHistory(
+  opts: Pick<SesameOptions, "apiKey" | "baseUrl" | "fetch">,
+  uuid: string,
+  count = 10,
+): Promise<SesameHistoryEntry[]> {
+  const baseUrl = opts.baseUrl ?? "https://app.candyhouse.co/api/sesame2";
+  const res = await (opts.fetch ?? fetch)(`${baseUrl}/${uuid}/history?page=0&lg=${count}`, {
+    headers: { "x-api-key": opts.apiKey },
+  });
+  if (!res.ok) throw new Error(`sesame: HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const rows = (await res.json()) as Array<{ type: number; timeStamp: number; historyTag: string | null; recordID: number }>;
+  return rows.map((r) => ({
+    type: r.type,
+    timeStamp: r.timeStamp,
+    tag: r.historyTag ? Buffer.from(r.historyTag, "base64").toString("utf8") : null,
+    recordID: r.recordID,
+  }));
 }
 
 /** CHSesame2Status: "locked" | "unlocked" | "moved" (thumb turn between positions). */

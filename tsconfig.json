@@ -11,7 +11,9 @@
     "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": true,
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "hono/jsx"
   },
-  "include": ["packages/*/src", "scripts"]
+  "include": ["packages/*/src", "apps/*/src", "scripts"]
 }
